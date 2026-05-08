@@ -27,7 +27,7 @@ Therefore this tool, also for easier hosts management.
 ## install
 
 ```bash
-go install github.com/chinglinwen/goto@latest
+go install github.com/chinglinwen/goto/v2@latest
 ```
 
 ## usage

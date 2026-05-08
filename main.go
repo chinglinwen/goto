@@ -11,8 +11,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/chinglinwen/goto/config"
-	"github.com/chinglinwen/goto/ssh"
+	"github.com/chinglinwen/goto/v2/config"
+	"github.com/chinglinwen/goto/v2/ssh"
 	"k8s.io/klog/v2"
 )
 
