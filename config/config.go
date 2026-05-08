@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -24,24 +26,38 @@ type Config struct {
 	} `yaml:"hosts"`
 }
 
-func init() {
-	// setting config properties
-	viper.SetConfigName("config") // name of config file (without extension)
-	viper.SetConfigType("yaml")   // default type
-	viper.AddConfigPath("/etc/goterm/")
-	viper.AddConfigPath("$HOME/.goterm")
-	viper.AddConfigPath(".")
+func ParseConfig() (*Config, error) {
+	var lastErr error
+	for _, path := range configFiles() {
+		v := viper.New()
+		v.SetConfigFile(path)
+		if err := v.ReadInConfig(); err != nil {
+			lastErr = err
+			continue
+		}
+		klog.V(2).Info("read from config: ", v.ConfigFileUsed())
+		c := &Config{}
+		if err := v.Unmarshal(c); err != nil {
+			return nil, err
+		}
+		return c, nil
+	}
+	return nil, lastErr
 }
 
-func ParseConfig() (*Config, error) {
-	err := viper.ReadInConfig() // Find and read the config file
-	if err != nil {
-		return nil, err
+func configFiles() []string {
+	home, _ := os.UserHomeDir()
+	files := []string{}
+	if home != "" {
+		files = append(files,
+			filepath.Join(home, ".ssh", "goterm.yaml"),
+			filepath.Join(home, ".goterm", "config.yaml"),
+		)
 	}
-	klog.V(2).Info("read from config: ", viper.ConfigFileUsed())
-	c := &Config{}
-	err = viper.Unmarshal(c)
-	return c, err
+	return append(files,
+		filepath.Join("/etc/goterm", "config.yaml"),
+		"config.yaml",
+	)
 }
 
 func (c *Config) GetHost(expr string) (host, port, cred, cmds string) {

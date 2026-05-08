@@ -66,3 +66,45 @@ func TestParseHost(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodePassword(t *testing.T) {
+	tests := []struct {
+		name    string
+		pass    string
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "plain",
+			pass: "password",
+			want: "password",
+		},
+		{
+			name: "base64",
+			pass: "base64:cGFzc3dvcmQ=",
+			want: "password",
+		},
+		{
+			name:    "invalid base64",
+			pass:    "base64:not base64",
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		got, err := decodePassword(test.pass)
+		if test.wantErr {
+			if err == nil {
+				t.Errorf("decodePassword(%q) got nil err, want err", test.pass)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("decodePassword(%q) got err %v", test.pass, err)
+			continue
+		}
+		if got != test.want {
+			t.Errorf("decodePassword(%q) = %q, want %q", test.pass, got, test.want)
+		}
+	}
+}

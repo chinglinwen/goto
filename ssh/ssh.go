@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -64,7 +65,7 @@ func SetKeyPath(keypath string) Option {
 			return
 		}
 		klog.V(2).Info("set keypath: ", keypath)
-		t.privKeyPath = keypath
+		t.privKeyPath = expandHome(keypath)
 	}
 }
 
@@ -140,11 +141,35 @@ func (t *SSHTerminal) Start() error {
 	return t.interactiveSession()
 }
 
-func (t *SSHTerminal) Close() error {
-	if err := t.sess.Close(); err != nil {
+func (t *SSHTerminal) Run(cmd string) error {
+	if err := t.connect(); err != nil {
 		return err
 	}
-	return t.client.Close()
+	t.sess.Stdout = os.Stdout
+	t.sess.Stderr = os.Stderr
+	return t.sess.Run(cmd)
+}
+
+func ExitStatus(err error) (int, bool) {
+	if exitErr, ok := err.(*ssh.ExitError); ok {
+		return exitErr.ExitStatus(), true
+	}
+	return 0, false
+}
+
+func (t *SSHTerminal) Close() error {
+	var closeErr error
+	if t.sess != nil {
+		if err := t.sess.Close(); err != nil && err != io.EOF {
+			closeErr = err
+		}
+	}
+	if t.client != nil {
+		if err := t.client.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	return closeErr
 }
 
 func (t *SSHTerminal) updateTerminalSize() {
@@ -275,6 +300,15 @@ func (t *SSHTerminal) doinitcmds() {
 }
 func defaultKeyPath() string {
 	return filepath.Join(homedir(), ".ssh/id_rsa")
+}
+func expandHome(path string) string {
+	if path == "~" {
+		return homedir()
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(homedir(), path[2:])
+	}
+	return path
 }
 func homedir() string {
 	usr, _ := user.Current()
