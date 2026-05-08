@@ -14,8 +14,12 @@
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
+# Local build outputs
+goto
 goterm
 *.patch
 .vscode
+goto-linux-amd64
+goto-mac-arm64
 goterm-linux-amd64
 goterm-mac-arm64

@@ -50,11 +50,12 @@ func configFiles() []string {
 	files := []string{}
 	if home != "" {
 		files = append(files,
-			filepath.Join(home, ".ssh", "goterm.yaml"),
+			filepath.Join(home, ".ssh", "goto.yaml"),
 			filepath.Join(home, ".goterm", "config.yaml"),
 		)
 	}
 	return append(files,
+		filepath.Join("/etc/goto", "config.yaml"),
 		filepath.Join("/etc/goterm", "config.yaml"),
 		"config.yaml",
 	)

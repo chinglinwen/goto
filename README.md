@@ -1,6 +1,9 @@
-# GoTerm
+# goto
 
-A ssh client terminal written in go
+An ssh client terminal written in Go.
+
+This project and command were renamed from `goterm` to `goto`.
+Legacy `~/.goterm/config.yaml` configuration is still supported.
 
 with replace for expect tool in minds.
 
@@ -43,16 +46,16 @@ Therefore this tool, also for easier hosts management.
   -v	verbose output
   -V	print version
 
-Usage: goterm <name>
-       goterm -V
-       goterm <name|ip[:port]|expr|pattern> <cmd...>
-       echo 'uptime' | goterm <name|ip[:port]|expr|pattern>
-       goterm [-cmd='uptime'] <name|ip[:port]|expr|pattern>
-       goterm [-user=root] [-p=password] <ip[:port]>
-       goterm [-port=2222] [-user=userfoo] [-initcmds='sudo su -\n'] <name|ip[:port]|expr|pattern>
+Usage: goto <name>
+       goto -V
+       goto <name|ip[:port]|expr|pattern> <cmd...>
+       echo 'uptime' | goto <name|ip[:port]|expr|pattern>
+       goto [-cmd='uptime'] <name|ip[:port]|expr|pattern>
+       goto [-user=root] [-p=password] <ip[:port]>
+       goto [-port=2222] [-user=userfoo] [-initcmds='sudo su -\n'] <name|ip[:port]|expr|pattern>
 
 Config example:
-  $ cat ~/.ssh/goterm.yaml
+  $ cat ~/.ssh/goto.yaml
   creds:
   - name: vm
     user: root
@@ -66,8 +69,8 @@ Config example:
     initcmds: "sudo su -\n"
 
 keypath is a private key file, for example ~/.ssh/id_rsa, not id_rsa.pub.
-If pass is empty, goterm uses key-based auth with keypath.
-Config is read from ~/.ssh/goterm.yaml; legacy ~/.goterm/config.yaml still works.
+If pass is empty, goto uses key-based auth with keypath.
+Config is read from ~/.ssh/goto.yaml; legacy ~/.goterm/config.yaml still works.
 initcmds is only for interactive mode because it writes commands into the opened shell after login. Batch mode ignores it.
 Use -p to specify a password directly without reading credentials from config.
 Use pass: base64:<value> or -p base64:<value> to decode a base64 password.

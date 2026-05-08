@@ -15,7 +15,7 @@ func TestParseConfig(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	configPath := filepath.Join(configDir, "goterm.yaml")
+	configPath := filepath.Join(configDir, "goto.yaml")
 	if err := os.WriteFile(configPath, []byte(`creds:
 - name: vm
   user: root
