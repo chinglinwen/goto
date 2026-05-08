@@ -1,4 +1,4 @@
-module github.com/chinglinwen/goto/v2
+module github.com/chinglinwen/goto
 
 go 1.15
 

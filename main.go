@@ -11,12 +11,12 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/chinglinwen/goto/v2/config"
-	"github.com/chinglinwen/goto/v2/ssh"
+	"github.com/chinglinwen/goto/config"
+	"github.com/chinglinwen/goto/ssh"
 	"k8s.io/klog/v2"
 )
 
-const version = "v2.0.4"
+const version = "v1.0.4"
 
 func helpfunc() {
 	flag.CommandLine.SetOutput(os.Stdout)
