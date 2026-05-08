@@ -158,7 +158,7 @@ func (t *SSHTerminal) updateTerminalSize() {
 		fd := int(os.Stdin.Fd())
 		termWidth, termHeight, err := terminal.GetSize(fd)
 		if err != nil {
-			klog.Errorf("getsize err", err)
+			klog.Errorf("getsize err: %v", err)
 		}
 
 		for {
@@ -238,13 +238,13 @@ func (t *SSHTerminal) interactiveSession() error {
 		for {
 			n, err := os.Stdin.Read(buf)
 			if err != nil {
-				klog.Errorf("stdin read err: ", err)
+				klog.Errorf("stdin read err: %v", err)
 				return
 			}
 			if n > 0 {
 				_, err = t.stdin.Write(buf[:n])
 				if err != nil {
-					klog.Errorf("stdin write buf err: ", err)
+					klog.Errorf("stdin write buf err: %v", err)
 					t.exitMsg = err.Error()
 					return
 				}
@@ -270,7 +270,7 @@ func (t *SSHTerminal) doinitcmds() {
 	}
 	_, err := t.stdin.Write([]byte(t.initcmds))
 	if err != nil {
-		klog.Errorf("stdin write buf err: ", err)
+		klog.Errorf("stdin write buf err: %v", err)
 	}
 }
 func defaultKeyPath() string {

@@ -14,6 +14,8 @@ import (
 	"k8s.io/klog/v2"
 )
 
+const version = "v1.0.3"
+
 func helpfunc() {
 	flag.PrintDefaults()
 	fmt.Print(`
@@ -31,6 +33,7 @@ func main() {
 		cmds    string
 		label   string
 		filter  string
+		showVer bool
 	)
 	flag.StringVar(&port, "port", "", "port to connect")
 	flag.StringVar(&user, "user", "", "user to auth")
@@ -38,10 +41,15 @@ func main() {
 	flag.StringVar(&cmds, "initcmds", "", "init cmds after login")
 	flag.StringVar(&label, "l", "", "label filter for host")
 	flag.StringVar(&filter, "f", "", "regexp filter for host")
+	flag.BoolVar(&showVer, "v", false, "print version")
 	flag.Usage = helpfunc
-	klog.InitFlags(nil)
+	klog.InitFlags(flag.NewFlagSet("klog", flag.ContinueOnError))
 
 	flag.Parse()
+	if showVer {
+		fmt.Println(version)
+		return
+	}
 	klog.V(2).Info("debug info...")
 
 	c, err := config.ParseConfig()
@@ -172,6 +180,11 @@ func homedir() string {
 }
 
 func parseHost(host, originUser, originPort string) (user, ip, port string) {
+	user = originUser
+	port = originPort
+	if len(port) == 0 {
+		port = "22"
+	}
 	if strings.Contains(host, "@") {
 		user = strings.Split(host, "@")[0]
 		if len(user) == 0 {
@@ -189,12 +202,12 @@ func parseHost(host, originUser, originPort string) (user, ip, port string) {
 		ipStr := strings.Split(ip, ":")[0]
 		portStr := strings.Split(ip, ":")[1]
 		if len(portStr) == 0 {
-			portStr = originPort
+			portStr = port
 		}
 		if len(portStr) == 0 {
-			portStr = originPort
+			portStr = port
 		}
 		return user, ipStr, portStr
 	}
-	return user, ip, originPort
+	return user, ip, port
 }
