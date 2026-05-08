@@ -4,8 +4,6 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
-	"goto/config"
-	"goto/ssh"
 	"io"
 	"os"
 	osuser "os/user"
@@ -13,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/chinglinwen/goto/config"
+	"github.com/chinglinwen/goto/ssh"
 	"k8s.io/klog/v2"
 )
 

@@ -24,6 +24,12 @@ Therefore this tool, also for easier hosts management.
 * Config file for hosts and credentials
 * One line ssh login(with password, if you like)
 
+## install
+
+```bash
+go install github.com/chinglinwen/goto@latest
+```
+
 ## usage
 
 ```bash
