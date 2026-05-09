@@ -16,7 +16,7 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const version = "v1.0.4"
+const version = "v1.0.5"
 
 func helpfunc() {
 	flag.CommandLine.SetOutput(os.Stdout)
