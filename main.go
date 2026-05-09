@@ -16,7 +16,7 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const version = "v1.0.8"
+const version = "v1.0.9"
 
 func helpfunc() {
 	flag.CommandLine.SetOutput(os.Stdout)
@@ -28,6 +28,7 @@ Usage: goto <name>
        echo 'uptime' | goto <name|ip[:port]|expr|pattern>
        goto [-cmd='uptime'] <name|ip[:port]|expr|pattern>
        goto [-user=root] [-p=password] <ip[:port]>
+       goto [-j=<jump>] <name|ip[:port]|expr|pattern> <cmd...>
        goto [-port=2222] [-user=userfoo] [-initcmds='sudo su -\n'] <name|ip[:port]|expr|pattern>
 
 Examples:
@@ -37,7 +38,8 @@ Examples:
   goto -user=root -p=password 10.47.120.11    # direct plain password login
   goto -user=root -p=base64:cGFzc3dvcmQ= 10.47.120.11
   goto -keypath=~/.ssh/id_rsa root@10.47.120.11
-  goto 11 uptime                              # batch command from positional args
+  goto 11 uptime                              # batch command; uses host jump config when jump is set
+  goto -j=bastion 11 uptime                   # override with explicit jump host bastion
   goto -cmd='uname -a' 11                     # batch command from -cmd
   echo 'df -h' | goto 11                      # batch command from stdin
   goto -v 11 uptime                           # verbose batch execution
@@ -52,12 +54,20 @@ Config example:
     user: root
     pass: password
     keypath: ~/.ssh/id_rsa  # optional private key path; omit to use ~/.ssh/id_rsa
+  - name: jump
+    user: root
+    keypath: ~/.ssh/id_rsa
   hosts:
   - name: 11
     host: 10.47.120.11
     cred: vm
     port: 22
+    jump: bastion
     initcmds: "sudo su -\n"
+  - name: bastion
+    host: 10.47.120.10
+    cred: jump
+    port: 22
 
 keypath is a private key file, for example ~/.ssh/id_rsa, not id_rsa.pub.
 If pass is empty, goto uses key-based auth with keypath.
@@ -65,6 +75,8 @@ Config is read from ~/.ssh/goto.yaml; legacy ~/.goterm/config.yaml still works.
 initcmds is only for interactive mode because it writes commands into the opened shell after login. Batch mode ignores it.
 Use -p with a credential name to reuse its password, or with any other value as a plain password.
 Use pass: base64:<value> or -p base64:<value> to decode a base64 password.
+Use host jump: <name> to set a default jump host. Use -j with a configured host name or inline user@host:port to override it.
+Jump host config is resolved locally and uses key auth.
 Batch command mode writes only remote stdout to stdout, remote stderr to stderr, and exits with the remote command status.
 `)
 }
@@ -74,6 +86,7 @@ func main() {
 		user    string
 		pass    string
 		keyPath string
+		jump    string
 		cmds    string
 		cmd     string
 		label   string
@@ -85,6 +98,7 @@ func main() {
 	flag.StringVar(&user, "user", "", "user to auth")
 	flag.StringVar(&pass, "p", "", "credential name or plain password; use base64:<value> to decode")
 	flag.StringVar(&keyPath, "keypath", defaultKeyPath(), "private key path, e.g. ~/.ssh/id_rsa")
+	flag.StringVar(&jump, "j", "", "jump host name or user@host:port; key auth only")
 	flag.StringVar(&cmds, "initcmds", "", "init cmds after login")
 	flag.StringVar(&cmd, "cmd", "", "command to run in batch mode")
 	flag.StringVar(&label, "l", "", "label filter for host")
@@ -163,8 +177,8 @@ func main() {
 	}
 
 	klog.V(2).Infof("get hosts: %v", ipStr)
-	chost, cport, ccred, ccmds := c.GetHost(ipStr)
-	klog.V(2).Infof("chost: %v, cport: %v, ccred: %v, ccmds: %v", chost, cport, ccred, ccmds)
+	chost, cport, ccred, ccmds, cjump := c.GetHost(ipStr)
+	klog.V(2).Infof("chost: %v, cport: %v, ccred: %v, ccmds: %v, cjump: %v", chost, cport, ccred, ccmds, cjump)
 	if len(chost) == 0 {
 		// exit("there's no config for " + expr)
 		klog.V(2).Info("using best effort to guess target host with default creds")
@@ -188,6 +202,9 @@ func main() {
 	if len(cmds) != 0 {
 		ccmds = cmds
 	}
+	if len(jump) != 0 {
+		cjump = jump
+	}
 	if len(cpass) == 0 {
 		klog.V(2).Info("no password from cred config")
 	}
@@ -203,9 +220,18 @@ func main() {
 		cport = "22"
 	}
 
+	var jumpHost *ssh.JumpHost
+	if len(cjump) != 0 {
+		var err error
+		jumpHost, err = resolveJumpHost(c, cjump)
+		if err != nil {
+			exiterr("resolve jump host", err)
+		}
+	}
+
 	klog.V(2).Infof("chost: %v, cport: %v, cuser: %v, cpass: %v, ckeypath: %v, ccmds: %v", chost, cport, cuser, cpass, ckeypath, ccmds)
 	// klog.Infof("connecting to %v ..., with user: %v", expr, cuser)
-	startssh(chost, cuser, cport, cpass, ckeypath, ccmds, cmd, verbose)
+	startssh(chost, cuser, cport, cpass, ckeypath, ccmds, cmd, verbose, jumpHost)
 }
 
 func readCommandFromStdin() (string, error) {
@@ -247,7 +273,34 @@ func resolvePassword(c *config.Config, pass string) string {
 	return pass
 }
 
-func startssh(ip, user, port, pass, keypath, cmds, cmd string, verbose bool) {
+func resolveJumpHost(c *config.Config, expr string) (*ssh.JumpHost, error) {
+	if c == nil {
+		c = &config.Config{}
+	}
+	host, port, cred, _, _ := c.GetHost(expr)
+	user, _, keypath := c.GetCred(cred)
+	user, host, port = parseHost(host, user, port)
+	if len(host) == 0 {
+		return nil, fmt.Errorf("empty jump host")
+	}
+	if len(user) == 0 {
+		user = "root"
+	}
+	if len(port) == 0 {
+		port = "22"
+	}
+	if len(keypath) == 0 {
+		keypath = defaultKeyPath()
+	}
+	return &ssh.JumpHost{
+		Host:    host,
+		User:    user,
+		Port:    port,
+		KeyPath: keypath,
+	}, nil
+}
+
+func startssh(ip, user, port, pass, keypath, cmds, cmd string, verbose bool, jumpHost *ssh.JumpHost) {
 	tuser, tip, tport := parseHost(ip, user, port)
 	if len(tip) != 0 {
 		ip = tip
@@ -271,6 +324,9 @@ func startssh(ip, user, port, pass, keypath, cmds, cmd string, verbose bool) {
 	options := []ssh.Option{
 		ssh.SetPort(port),
 		ssh.SetKeyPath(keypath),
+	}
+	if jumpHost != nil {
+		options = append(options, ssh.SetJumpHost(*jumpHost))
 	}
 	if len(cmd) == 0 {
 		options = append(options, ssh.SetInitCmds(cmds))

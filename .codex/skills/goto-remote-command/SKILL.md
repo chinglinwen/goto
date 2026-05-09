@@ -28,6 +28,7 @@ From this repository, build or run the CLI with normal Go tooling:
 go run . <host> uptime
 go run . -cmd='uname -a' <host>
 echo 'df -h' | go run . <host>
+go run . -j <jump-host> <host> uptime
 ```
 
 For an installed binary:
@@ -36,6 +37,7 @@ For an installed binary:
 goto <host> uptime
 goto -cmd='uname -a' <host>
 echo 'df -h' | goto <host>
+goto -j <jump-host> <host> uptime
 ```
 
 Use `-v` only when debugging the connection path, because it intentionally enables verbose local logs:
@@ -84,13 +86,18 @@ Auth rules:
 - If password is empty, `goto` uses key-based auth.
 - `keypath` is a private key path, for example `~/.ssh/id_rsa`, not a `.pub` file.
 - Inline targets can include user and port: `root@10.47.120.11:2222`.
+- `-j` enables a jump host. The jump host is resolved from local config or inline `user@host:port`.
+- Host config can set `jump: <name>` as the default jump host for that target.
+- Explicit `-j` overrides the host config `jump`.
+- Jump host auth is key-only; its config `pass` is ignored.
+- Do not read config from the jump host. Target and jump host config both come from the local config file.
 
 ## Editing The Implementation
 
 Important files:
 
 - `main.go`: CLI flags, host-first argument parsing, stdin command fallback, password decoding, exit-status propagation.
-- `ssh/ssh.go`: SSH session setup, interactive shell, batch `Run`, stdout/stderr wiring, key auth.
+- `ssh/ssh.go`: SSH session setup, jump host tunneling, interactive shell, batch `Run`, stdout/stderr wiring, key auth.
 - `config/config.go`: config search order and host/credential lookup.
 - `README.md`: user-facing examples should match `goto -h`.
 

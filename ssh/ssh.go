@@ -30,12 +30,21 @@ type SSHTerminal struct {
 	initcmds    string
 	privKeyPath string
 
-	sess   *ssh.Session
-	client *ssh.Client
+	sess       *ssh.Session
+	client     *ssh.Client
+	jumpClient *ssh.Client
+	jump       *JumpHost
 
 	stdout io.Reader
 	stdin  io.Writer
 	stderr io.Reader
+}
+
+type JumpHost struct {
+	Host    string
+	User    string
+	Port    string
+	KeyPath string
 }
 
 type Option func(*SSHTerminal)
@@ -80,6 +89,25 @@ func SetInitCmds(initcmds string) Option {
 	}
 }
 
+func SetJumpHost(jump JumpHost) Option {
+	return func(t *SSHTerminal) {
+		if len(jump.Host) == 0 {
+			return
+		}
+		if len(jump.Port) == 0 {
+			jump.Port = defaultSSHPort
+		}
+		if len(jump.User) == 0 {
+			jump.User = "root"
+		}
+		if len(jump.KeyPath) == 0 {
+			jump.KeyPath = defaultKeyPath()
+		}
+		jump.KeyPath = expandHome(jump.KeyPath)
+		t.jump = &jump
+	}
+}
+
 func New(ip, user, pass string, options ...Option) *SSHTerminal {
 	t := &SSHTerminal{
 		ip:          ip,
@@ -95,23 +123,7 @@ func New(ip, user, pass string, options ...Option) *SSHTerminal {
 }
 
 func (t *SSHTerminal) connect() error {
-	auth := ssh.Password(t.pass)
-	// if no pass provided, use key based
-	if len(t.pass) == 0 {
-		signer, err := t.getSigner()
-		if err != nil {
-			return err
-		}
-		auth = ssh.PublicKeys(signer)
-	}
-	sshConfig := &ssh.ClientConfig{
-		User: t.user,
-		Auth: []ssh.AuthMethod{
-			auth,
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-	}
-	client, err := ssh.Dial("tcp", t.ip+":"+t.port, sshConfig)
+	client, err := t.dialTarget()
 	if err != nil {
 		return err
 	}
@@ -119,15 +131,70 @@ func (t *SSHTerminal) connect() error {
 
 	session, err := client.NewSession()
 	if err != nil {
+		_ = t.Close()
 		return err
 	}
 	t.sess = session
 	return nil
 }
 
-func (t *SSHTerminal) getSigner() (ssh.Signer, error) {
-	klog.V(2).Info("using keypath: ", t.privKeyPath)
-	key, err := ioutil.ReadFile(t.privKeyPath)
+func (t *SSHTerminal) dialTarget() (*ssh.Client, error) {
+	sshConfig, err := clientConfig(t.user, t.pass, t.privKeyPath)
+	if err != nil {
+		return nil, err
+	}
+	targetAddr := t.ip + ":" + t.port
+	if t.jump == nil {
+		return ssh.Dial("tcp", targetAddr, sshConfig)
+	}
+
+	jumpConfig, err := clientConfig(t.jump.User, "", t.jump.KeyPath)
+	if err != nil {
+		return nil, err
+	}
+	jumpAddr := t.jump.Host + ":" + t.jump.Port
+	jumpClient, err := ssh.Dial("tcp", jumpAddr, jumpConfig)
+	if err != nil {
+		return nil, err
+	}
+	t.jumpClient = jumpClient
+
+	conn, err := jumpClient.Dial("tcp", targetAddr)
+	if err != nil {
+		_ = jumpClient.Close()
+		return nil, err
+	}
+	clientConn, chans, reqs, err := ssh.NewClientConn(conn, targetAddr, sshConfig)
+	if err != nil {
+		_ = conn.Close()
+		_ = jumpClient.Close()
+		return nil, err
+	}
+	return ssh.NewClient(clientConn, chans, reqs), nil
+}
+
+func clientConfig(user, pass, keypath string) (*ssh.ClientConfig, error) {
+	auth := ssh.Password(pass)
+	if len(pass) == 0 {
+		signer, err := signerFromKeyPath(keypath)
+		if err != nil {
+			return nil, err
+		}
+		auth = ssh.PublicKeys(signer)
+	}
+	return &ssh.ClientConfig{
+		User: user,
+		Auth: []ssh.AuthMethod{
+			auth,
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}, nil
+}
+
+func signerFromKeyPath(keypath string) (ssh.Signer, error) {
+	keypath = expandHome(keypath)
+	klog.V(2).Info("using keypath: ", keypath)
+	key, err := ioutil.ReadFile(keypath)
 	if err != nil {
 		return nil, err
 	}
@@ -166,6 +233,11 @@ func (t *SSHTerminal) Close() error {
 	}
 	if t.client != nil {
 		if err := t.client.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	if t.jumpClient != nil {
+		if err := t.jumpClient.Close(); err != nil && closeErr == nil {
 			closeErr = err
 		}
 	}

@@ -39,6 +39,8 @@ go install github.com/chinglinwen/goto@latest
     	regexp filter for host
   -initcmds string
     	init cmds after login
+  -j string
+    	jump host name or user@host:port; key auth only
   -keypath string
     	private key path, e.g. ~/.ssh/id_rsa
   -l string
@@ -58,6 +60,7 @@ Usage: goto <name>
        echo 'uptime' | goto <name|ip[:port]|expr|pattern>
        goto [-cmd='uptime'] <name|ip[:port]|expr|pattern>
        goto [-user=root] [-p=password] <ip[:port]>
+       goto [-j=<jump>] <name|ip[:port]|expr|pattern> <cmd...>
        goto [-port=2222] [-user=userfoo] [-initcmds='sudo su -\n'] <name|ip[:port]|expr|pattern>
 
 Examples:
@@ -67,7 +70,8 @@ Examples:
   goto -user=root -p=password 10.47.120.11    # direct plain password login
   goto -user=root -p=base64:cGFzc3dvcmQ= 10.47.120.11
   goto -keypath=~/.ssh/id_rsa root@10.47.120.11
-  goto 11 uptime                              # batch command from positional args
+  goto 11 uptime                              # batch command; uses host jump config when jump is set
+  goto -j=bastion 11 uptime                   # override with explicit jump host bastion
   goto -cmd='uname -a' 11                     # batch command from -cmd
   echo 'df -h' | goto 11                      # batch command from stdin
   goto -v 11 uptime                           # verbose batch execution
@@ -82,12 +86,20 @@ Config example:
     user: root
     pass: password
     keypath: ~/.ssh/id_rsa  # optional private key path; omit to use ~/.ssh/id_rsa
+  - name: jump
+    user: root
+    keypath: ~/.ssh/id_rsa
   hosts:
   - name: 11
     host: 10.47.120.11
     cred: vm
     port: 22
+    jump: bastion
     initcmds: "sudo su -\n"
+  - name: bastion
+    host: 10.47.120.10
+    cred: jump
+    port: 22
 
 keypath is a private key file, for example ~/.ssh/id_rsa, not id_rsa.pub.
 If pass is empty, goto uses key-based auth with keypath.
@@ -95,6 +107,8 @@ Config is read from ~/.ssh/goto.yaml; legacy ~/.goterm/config.yaml still works.
 initcmds is only for interactive mode because it writes commands into the opened shell after login. Batch mode ignores it.
 Use -p with a credential name to reuse its password, or with any other value as a plain password.
 Use pass: base64:<value> or -p base64:<value> to decode a base64 password.
+Use host jump: <name> to set a default jump host. Use -j with a configured host name or inline user@host:port to override it.
+Jump host config is resolved locally and uses key auth.
 Batch command mode writes only remote stdout to stdout, remote stderr to stderr, and exits with the remote command status.
 ```
 

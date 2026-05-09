@@ -22,6 +22,7 @@ type Config struct {
 		Cred     string `yaml:"cred"`
 		Port     string `yaml:"port"`
 		Label    string `yaml:"label"`
+		Jump     string `yaml:"jump"`
 		InitCmds string `yaml:"initcmds"`
 	} `yaml:"hosts"`
 }
@@ -61,15 +62,15 @@ func configFiles() []string {
 	)
 }
 
-func (c *Config) GetHost(expr string) (host, port, cred, cmds string) {
+func (c *Config) GetHost(expr string) (host, port, cred, cmds, jump string) {
 	klog.V(2).Infof("checking host: %v", expr)
 	for _, v := range c.Hosts {
 		if v.Name == expr || strings.HasSuffix(v.Host, expr) {
 			klog.V(2).Infof("got cred: %+v", v)
-			return v.Host, v.Port, v.Cred, v.InitCmds
+			return v.Host, v.Port, v.Cred, v.InitCmds, v.Jump
 		}
 	}
-	return expr, "22", "", ""
+	return expr, "22", "", "", ""
 }
 
 // if name empty, get from default cred
