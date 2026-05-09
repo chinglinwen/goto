@@ -44,7 +44,7 @@ go install github.com/chinglinwen/goto@latest
   -l string
     	label filter for host
   -p string
-    	password to auth; use base64:<value> to decode
+    	credential name or plain password; use base64:<value> to decode
   -port string
     	port to connect
   -user string
@@ -63,7 +63,8 @@ Usage: goto <name>
 Examples:
   goto 11                                      # interactive login using config host 11
   goto root@10.47.120.11:2222                 # interactive login with inline user and port
-  goto -user=root -p=password 10.47.120.11    # direct password login without config
+  goto -user=root -p=vm 10.47.120.11          # use password from configured credential vm
+  goto -user=root -p=password 10.47.120.11    # direct plain password login
   goto -user=root -p=base64:cGFzc3dvcmQ= 10.47.120.11
   goto -keypath=~/.ssh/id_rsa root@10.47.120.11
   goto 11 uptime                              # batch command from positional args
@@ -92,7 +93,7 @@ keypath is a private key file, for example ~/.ssh/id_rsa, not id_rsa.pub.
 If pass is empty, goto uses key-based auth with keypath.
 Config is read from ~/.ssh/goto.yaml; legacy ~/.goterm/config.yaml still works.
 initcmds is only for interactive mode because it writes commands into the opened shell after login. Batch mode ignores it.
-Use -p to specify a password directly without reading credentials from config.
+Use -p with a credential name to reuse its password, or with any other value as a plain password.
 Use pass: base64:<value> or -p base64:<value> to decode a base64 password.
 Batch command mode writes only remote stdout to stdout, remote stderr to stderr, and exits with the remote command status.
 ```

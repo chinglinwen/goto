@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/chinglinwen/goto/config"
+)
 
 func TestParseHost(t *testing.T) {
 	tests := []struct {
@@ -105,6 +109,64 @@ func TestDecodePassword(t *testing.T) {
 		}
 		if got != test.want {
 			t.Errorf("decodePassword(%q) = %q, want %q", test.pass, got, test.want)
+		}
+	}
+}
+
+func TestResolvePassword(t *testing.T) {
+	c := &config.Config{
+		Creds: []struct {
+			Name    string `yaml:"name"`
+			User    string `yaml:"user"`
+			Pass    string `yaml:"pass"`
+			Keypath string `yaml:"keypath"`
+		}{
+			{
+				Name: "vm",
+				Pass: "secret",
+			},
+			{
+				Name: "encoded",
+				Pass: "base64:c2VjcmV0",
+			},
+		},
+	}
+
+	tests := []struct {
+		name string
+		pass string
+		want string
+	}{
+		{
+			name: "credential name",
+			pass: "vm",
+			want: "secret",
+		},
+		{
+			name: "credential base64 password stays encoded for later decode",
+			pass: "encoded",
+			want: "base64:c2VjcmV0",
+		},
+		{
+			name: "plain password",
+			pass: "password",
+			want: "password",
+		},
+		{
+			name: "nil config",
+			pass: "password",
+			want: "password",
+		},
+	}
+
+	for _, test := range tests {
+		candidate := c
+		if test.name == "nil config" {
+			candidate = nil
+		}
+		got := resolvePassword(candidate, test.pass)
+		if got != test.want {
+			t.Errorf("resolvePassword(%q) = %q, want %q", test.pass, got, test.want)
 		}
 	}
 }
