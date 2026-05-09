@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"os/user"
 	"path/filepath"
@@ -22,17 +24,20 @@ const (
 )
 
 type SSHTerminal struct {
-	ip          string
-	user        string
-	pass        string
-	port        string
-	exitMsg     string
-	initcmds    string
-	privKeyPath string
+	ip           string
+	user         string
+	pass         string
+	port         string
+	exitMsg      string
+	initcmds     string
+	privKeyPath  string
+	proxyCommand string
 
 	sess       *ssh.Session
 	client     *ssh.Client
 	jumpClient *ssh.Client
+	proxyCmd   *exec.Cmd
+	proxyConn  net.Conn
 	jump       *JumpHost
 
 	stdout io.Reader
@@ -108,6 +113,12 @@ func SetJumpHost(jump JumpHost) Option {
 	}
 }
 
+func SetProxyCommand(command string) Option {
+	return func(t *SSHTerminal) {
+		t.proxyCommand = command
+	}
+}
+
 func New(ip, user, pass string, options ...Option) *SSHTerminal {
 	t := &SSHTerminal{
 		ip:          ip,
@@ -144,6 +155,18 @@ func (t *SSHTerminal) dialTarget() (*ssh.Client, error) {
 		return nil, err
 	}
 	targetAddr := t.ip + ":" + t.port
+	if t.jump == nil && t.proxyCommand != "" {
+		conn, err := t.dialProxyCommand()
+		if err != nil {
+			return nil, err
+		}
+		clientConn, chans, reqs, err := ssh.NewClientConn(conn, targetAddr, sshConfig)
+		if err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		return ssh.NewClient(clientConn, chans, reqs), nil
+	}
 	if t.jump == nil {
 		return ssh.Dial("tcp", targetAddr, sshConfig)
 	}
@@ -171,6 +194,48 @@ func (t *SSHTerminal) dialTarget() (*ssh.Client, error) {
 		return nil, err
 	}
 	return ssh.NewClient(clientConn, chans, reqs), nil
+}
+
+func (t *SSHTerminal) dialProxyCommand() (net.Conn, error) {
+	command := t.expandProxyCommand()
+	cmd := exec.Command("sh", "-c", command)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	local, remote := net.Pipe()
+	t.proxyCmd = cmd
+	t.proxyConn = local
+	go func() {
+		_, _ = io.Copy(stdin, local)
+		_ = stdin.Close()
+	}()
+	go func() {
+		_, _ = io.Copy(local, stdout)
+		_ = local.Close()
+		_ = cmd.Wait()
+	}()
+	return remote, nil
+}
+
+func (t *SSHTerminal) expandProxyCommand() string {
+	replacer := strings.NewReplacer(
+		"%h", t.ip,
+		"%p", t.port,
+		"%r", t.user,
+		"%n", t.ip,
+		"%%", "%",
+	)
+	return replacer.Replace(t.proxyCommand)
 }
 
 func clientConfig(user, pass, keypath string) (*ssh.ClientConfig, error) {
@@ -240,6 +305,14 @@ func (t *SSHTerminal) Close() error {
 		if err := t.jumpClient.Close(); err != nil && closeErr == nil {
 			closeErr = err
 		}
+	}
+	if t.proxyConn != nil {
+		if err := t.proxyConn.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	if t.proxyCmd != nil && t.proxyCmd.Process != nil {
+		_ = t.proxyCmd.Process.Kill()
 	}
 	return closeErr
 }

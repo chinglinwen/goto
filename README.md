@@ -22,6 +22,7 @@ Therefore this tool, also for easier hosts management.
 * Support password and key based auth
 * Share credential for many hosts
 * Config file for hosts and credentials
+* Read HostName/User/Port/IdentityFile/ProxyCommand from ~/.ssh/config
 * One line ssh login(with password, if you like)
 
 ## install
@@ -72,6 +73,7 @@ Examples:
   goto -keypath=~/.ssh/id_rsa root@10.47.120.11
   goto 11 uptime                              # batch command; uses host jump config when jump is set
   goto -j=bastion 11 uptime                   # override with explicit jump host bastion
+  goto internal-vm uptime                     # can resolve HostName/User/Port/IdentityFile/ProxyCommand from ~/.ssh/config
   goto -cmd='uname -a' 11                     # batch command from -cmd
   echo 'df -h' | goto 11                      # batch command from stdin
   goto -v 11 uptime                           # verbose batch execution
@@ -109,6 +111,7 @@ Use -p with a credential name to reuse its password, or with any other value as 
 Use pass: base64:<value> or -p base64:<value> to decode a base64 password.
 Use host jump: <name> to set a default jump host. Use -j with a configured host name or inline user@host:port to override it.
 Jump host config is resolved locally and uses key auth.
+goto also reads ~/.ssh/config for HostName, User, Port, IdentityFile, and ProxyCommand.
 Batch command mode writes only remote stdout to stdout, remote stderr to stderr, and exits with the remote command status.
 ```
 

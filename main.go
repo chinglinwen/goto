@@ -16,7 +16,7 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const version = "v1.0.9"
+const version = "v1.0.10"
 
 func helpfunc() {
 	flag.CommandLine.SetOutput(os.Stdout)
@@ -40,6 +40,7 @@ Examples:
   goto -keypath=~/.ssh/id_rsa root@10.47.120.11
   goto 11 uptime                              # batch command; uses host jump config when jump is set
   goto -j=bastion 11 uptime                   # override with explicit jump host bastion
+  goto internal-vm uptime                     # can resolve HostName/User/Port/IdentityFile/ProxyCommand from ~/.ssh/config
   goto -cmd='uname -a' 11                     # batch command from -cmd
   echo 'df -h' | goto 11                      # batch command from stdin
   goto -v 11 uptime                           # verbose batch execution
@@ -77,6 +78,7 @@ Use -p with a credential name to reuse its password, or with any other value as 
 Use pass: base64:<value> or -p base64:<value> to decode a base64 password.
 Use host jump: <name> to set a default jump host. Use -j with a configured host name or inline user@host:port to override it.
 Jump host config is resolved locally and uses key auth.
+goto also reads ~/.ssh/config for HostName, User, Port, IdentityFile, and ProxyCommand.
 Batch command mode writes only remote stdout to stdout, remote stderr to stderr, and exits with the remote command status.
 `)
 }
@@ -118,9 +120,16 @@ func main() {
 		_ = klogFlags.Set("v", "2")
 	}
 	keyPathSet := false
+	userSet := false
+	portSet := false
 	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "keypath" {
+		switch f.Name {
+		case "keypath":
 			keyPathSet = true
+		case "user":
+			userSet = true
+		case "port":
+			portSet = true
 		}
 	})
 	klog.V(2).Info("debug info...")
@@ -179,6 +188,16 @@ func main() {
 	klog.V(2).Infof("get hosts: %v", ipStr)
 	chost, cport, ccred, ccmds, cjump := c.GetHost(ipStr)
 	klog.V(2).Infof("chost: %v, cport: %v, ccred: %v, ccmds: %v, cjump: %v", chost, cport, ccred, ccmds, cjump)
+	_, sshConfigName, _ := parseHost(ipStr, "", "")
+	sshConfigHost := config.GetSSHConfigHost(sshConfigName)
+	if sshConfigHost.Found {
+		if sshConfigHost.HostName != "" {
+			chost = sshConfigHost.HostName
+		}
+		if !portSet && sshConfigHost.Port != "" {
+			cport = sshConfigHost.Port
+		}
+	}
 	if len(chost) == 0 {
 		// exit("there's no config for " + expr)
 		klog.V(2).Info("using best effort to guess target host with default creds")
@@ -193,8 +212,14 @@ func main() {
 	if len(user) != 0 {
 		cuser = user
 	}
+	if !userSet && sshConfigHost.User != "" {
+		cuser = sshConfigHost.User
+	}
 	if len(pass) != 0 {
 		cpass = resolvePassword(c, pass)
+	}
+	if !keyPathSet && sshConfigHost.IdentityFile != "" {
+		ckeypath = sshConfigHost.IdentityFile
 	}
 	if keyPathSet {
 		ckeypath = keyPath
@@ -231,7 +256,7 @@ func main() {
 
 	klog.V(2).Infof("chost: %v, cport: %v, cuser: %v, cpass: %v, ckeypath: %v, ccmds: %v", chost, cport, cuser, cpass, ckeypath, ccmds)
 	// klog.Infof("connecting to %v ..., with user: %v", expr, cuser)
-	startssh(chost, cuser, cport, cpass, ckeypath, ccmds, cmd, verbose, jumpHost)
+	startssh(chost, cuser, cport, cpass, ckeypath, ccmds, cmd, verbose, jumpHost, sshConfigHost.ProxyCommand)
 }
 
 func readCommandFromStdin() (string, error) {
@@ -300,7 +325,7 @@ func resolveJumpHost(c *config.Config, expr string) (*ssh.JumpHost, error) {
 	}, nil
 }
 
-func startssh(ip, user, port, pass, keypath, cmds, cmd string, verbose bool, jumpHost *ssh.JumpHost) {
+func startssh(ip, user, port, pass, keypath, cmds, cmd string, verbose bool, jumpHost *ssh.JumpHost, proxyCommand string) {
 	tuser, tip, tport := parseHost(ip, user, port)
 	if len(tip) != 0 {
 		ip = tip
@@ -327,6 +352,9 @@ func startssh(ip, user, port, pass, keypath, cmds, cmd string, verbose bool, jum
 	}
 	if jumpHost != nil {
 		options = append(options, ssh.SetJumpHost(*jumpHost))
+	}
+	if proxyCommand != "" {
+		options = append(options, ssh.SetProxyCommand(proxyCommand))
 	}
 	if len(cmd) == 0 {
 		options = append(options, ssh.SetInitCmds(cmds))
