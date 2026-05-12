@@ -16,7 +16,7 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const version = "v1.0.10"
+const version = "v1.0.11"
 
 func helpfunc() {
 	flag.CommandLine.SetOutput(os.Stdout)
@@ -24,18 +24,20 @@ func helpfunc() {
 	fmt.Print(`
 Usage: goto <name>
        goto -V
+       goto -cred=<name>
        goto <name|ip[:port]|expr|pattern> <cmd...>
        echo 'uptime' | goto <name|ip[:port]|expr|pattern>
        goto [-cmd='uptime'] <name|ip[:port]|expr|pattern>
-       goto [-user=root] [-p=password] <ip[:port]>
+       goto [-p=password] <ip[:port]>
        goto [-j=<jump>] <name|ip[:port]|expr|pattern> <cmd...>
-       goto [-port=2222] [-user=userfoo] [-initcmds='sudo su -\n'] <name|ip[:port]|expr|pattern>
+       goto [-port=2222] [-initcmds='sudo su -\n'] <name|ip[:port]|expr|pattern>
 
 Examples:
   goto 11                                      # interactive login using config host 11
   goto root@10.47.120.11:2222                 # interactive login with inline user and port
-  goto -user=root -p=vm 10.47.120.11          # use password from configured credential vm
-  goto -user=root -p=password 10.47.120.11    # direct plain password login
+  goto -p=vm 10.47.120.11                     # use user+password from configured credential vm
+  goto -user=root -p=vm 10.47.120.11          # override user, use password from credential vm
+  goto -p=password 10.47.120.11               # direct plain password login
   goto -user=root -p=base64:cGFzc3dvcmQ= 10.47.120.11
   goto -keypath=~/.ssh/id_rsa root@10.47.120.11
   goto 11 uptime                              # batch command; uses host jump config when jump is set
@@ -74,7 +76,8 @@ keypath is a private key file, for example ~/.ssh/id_rsa, not id_rsa.pub.
 If pass is empty, goto uses key-based auth with keypath.
 Config is read from ~/.ssh/goto.yaml; legacy ~/.goterm/config.yaml still works.
 initcmds is only for interactive mode because it writes commands into the opened shell after login. Batch mode ignores it.
-Use -p with a credential name to reuse its password, or with any other value as a plain password.
+Use -p with a credential name to reuse its user, password and keypath; or with any other value as a plain password.
+Use -cred=<name> to show credential info (user, pass, keypath) and exit.
 Use pass: base64:<value> or -p base64:<value> to decode a base64 password.
 Use host jump: <name> to set a default jump host. Use -j with a configured host name or inline user@host:port to override it.
 Jump host config is resolved locally and uses key auth.
@@ -84,17 +87,18 @@ Batch command mode writes only remote stdout to stdout, remote stderr to stderr,
 }
 func main() {
 	var (
-		port    string
-		user    string
-		pass    string
-		keyPath string
-		jump    string
-		cmds    string
-		cmd     string
-		label   string
-		filter  string
-		verbose bool
-		showVer bool
+		port      string
+		user      string
+		pass      string
+		keyPath   string
+		jump      string
+		cmds      string
+		cmd       string
+		label     string
+		filter    string
+		verbose   bool
+		showVer   bool
+		showCred  string
 	)
 	flag.StringVar(&port, "port", "", "port to connect")
 	flag.StringVar(&user, "user", "", "user to auth")
@@ -105,6 +109,7 @@ func main() {
 	flag.StringVar(&cmd, "cmd", "", "command to run in batch mode")
 	flag.StringVar(&label, "l", "", "label filter for host")
 	flag.StringVar(&filter, "f", "", "regexp filter for host")
+	flag.StringVar(&showCred, "cred", "", "show credential info by name and exit")
 	flag.BoolVar(&verbose, "v", false, "verbose output")
 	flag.BoolVar(&showVer, "V", false, "print version")
 	flag.Usage = helpfunc
@@ -118,6 +123,24 @@ func main() {
 	}
 	if verbose {
 		_ = klogFlags.Set("v", "2")
+	}
+
+	c, configErr := config.ParseConfig()
+	if configErr != nil {
+		klog.V(2).Infof("parse config err: %v", configErr)
+		c = &config.Config{}
+	}
+
+	if len(showCred) != 0 {
+		if configErr != nil {
+			exiterr("parse config ", configErr)
+		}
+		cred := c.GetCredByName(showCred)
+		if cred == nil {
+			exit("credential '" + showCred + "' not found")
+		}
+		fmt.Printf("name: %v\nuser: %v\npass: %v\nkeypath: %v\n", cred.Name, cred.User, cred.Pass, cred.Keypath)
+		return
 	}
 	keyPathSet := false
 	userSet := false
@@ -133,12 +156,6 @@ func main() {
 		}
 	})
 	klog.V(2).Info("debug info...")
-
-	c, configErr := config.ParseConfig()
-	if configErr != nil {
-		klog.V(2).Infof("parse config err: %v", configErr)
-		c = &config.Config{}
-	}
 
 	if len(label) != 0 {
 		if configErr != nil {
@@ -216,7 +233,18 @@ func main() {
 		cuser = sshConfigHost.User
 	}
 	if len(pass) != 0 {
-		cpass = resolvePassword(c, pass)
+		pcred := c.GetCredByName(pass)
+		if pcred != nil {
+			cpass = pcred.Pass
+			if !userSet {
+				cuser = pcred.User
+			}
+			if !keyPathSet && len(pcred.Keypath) != 0 {
+				ckeypath = pcred.Keypath
+			}
+		} else {
+			cpass = pass
+		}
 	}
 	if !keyPathSet && sshConfigHost.IdentityFile != "" {
 		ckeypath = sshConfigHost.IdentityFile

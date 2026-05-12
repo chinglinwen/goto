@@ -85,3 +85,18 @@ func (c *Config) GetCred(name string) (user, pass, keypath string) {
 	klog.V(2).Infof("cred not found for: %v", name)
 	return
 }
+
+// GetCredByName returns the matching cred entry, or nil if not found.
+func (c *Config) GetCredByName(name string) *struct {
+	Name    string `yaml:"name"`
+	User    string `yaml:"user"`
+	Pass    string `yaml:"pass"`
+	Keypath string `yaml:"keypath"`
+} {
+	for i := range c.Creds {
+		if c.Creds[i].Name == name {
+			return &c.Creds[i]
+		}
+	}
+	return nil
+}
