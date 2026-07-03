@@ -266,6 +266,14 @@ func signerFromKeyPath(keypath string) (ssh.Signer, error) {
 	return ssh.ParsePrivateKey(key)
 }
 
+func PublicKeyForPrivateKey(keypath string) (string, error) {
+	signer, err := signerFromKeyPath(keypath)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))), nil
+}
+
 func (t *SSHTerminal) Start() error {
 	if err := t.connect(); err != nil {
 		return err

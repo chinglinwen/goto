@@ -30,6 +30,7 @@ Usage: goto <name>
        goto [-cmd='uptime'] <name|ip[:port]|expr|pattern>
        goto [-cred=<name>] <ip[:port]>
        goto [-p=password] <ip[:port]>
+       goto -setup-nopass [-force] <name|ip[:port]>
        goto [-j=<jump>] <name|ip[:port]|expr|pattern> <cmd...>
        goto [-port=2222] [-initcmds='sudo su -\n'] <name|ip[:port]|expr|pattern>
 
@@ -42,6 +43,8 @@ Examples:
   goto -p=password 10.47.120.11               # direct plain password login
   goto -user=root -p=base64:cGFzc3dvcmQ= 10.47.120.11
   goto -keypath=~/.ssh/id_rsa root@10.47.120.11
+  goto -setup-nopass -p=vm 10.47.120.11       # install local public key and save ~/.ssh/config.d/<host> entry
+  goto -setup-nopass -force -p=vm 10.47.120.11 # replace existing exact Host entry
   goto 11 uptime                              # batch command; uses host jump config when jump is set
   goto -j=bastion 11 uptime                   # override with explicit jump host bastion
   goto internal-vm uptime                     # can resolve HostName/User/Port/IdentityFile/ProxyCommand from ~/.ssh/config
@@ -83,6 +86,8 @@ Use -cred=<name> to select a configured credential for login.
 Use -show-cred=<name> to show credential info (user, pass, keypath) and exit.
 Use pass: base64:<value> or -p base64:<value> to decode a base64 password.
 Quote pass values in goto.yaml when they contain YAML special characters such as %.
+Use -setup-nopass to append the selected public key to the remote authorized_keys and save a local ~/.ssh/config.d/<host> entry.
+Use -force with -setup-nopass to replace an existing exact Host entry in that generated per-host file.
 Use host jump: <name> to set a default jump host. Use -j with a configured host name or inline user@host:port to override it.
 Jump host config is resolved locally and uses key auth.
 goto also reads ~/.ssh/config for HostName, User, Port, IdentityFile, and ProxyCommand.
@@ -101,9 +106,11 @@ func main() {
 		label    string
 		filter   string
 		cred     string
+		force    bool
 		verbose  bool
 		showVer  bool
 		showCred string
+		nopass   bool
 	)
 	flag.StringVar(&port, "port", "", "port to connect")
 	flag.StringVar(&user, "user", "", "user to auth")
@@ -116,6 +123,8 @@ func main() {
 	flag.StringVar(&filter, "f", "", "regexp filter for host")
 	flag.StringVar(&cred, "cred", "", "credential name for auth")
 	flag.StringVar(&showCred, "show-cred", "", "show credential info by name and exit")
+	flag.BoolVar(&nopass, "setup-nopass", false, "install public key on target and save ~/.ssh/config.d/<host> entry")
+	flag.BoolVar(&force, "force", false, "replace existing exact Host entry when used with -setup-nopass")
 	flag.BoolVar(&verbose, "v", false, "verbose output")
 	flag.BoolVar(&showVer, "V", false, "print version")
 	flag.Usage = helpfunc
@@ -187,10 +196,16 @@ func main() {
 
 	klog.V(2).Info("args: ", args)
 	ipStr := args[0]
-	if len(cmd) == 0 {
+	if nopass && len(args) > 1 {
+		exit("-setup-nopass does not accept remote command arguments")
+	}
+	if nopass && len(cmd) != 0 {
+		exit("-setup-nopass does not accept -cmd")
+	}
+	if !nopass && len(cmd) == 0 {
 		cmd = strings.Join(args[1:], " ")
 	}
-	if len(cmd) == 0 {
+	if !nopass && len(cmd) == 0 {
 		var err error
 		cmd, err = readCommandFromStdin()
 		if err != nil {
@@ -279,6 +294,14 @@ func main() {
 	}
 
 	klog.V(2).Infof("chost: %v, cport: %v, cuser: %v, cpass: ***, ckeypath: %v, ccmds: %v", chost, cport, cuser, ckeypath, ccmds)
+	if nopass {
+		alias := nopassAlias(ipStr)
+		if err := setupNopass(chost, cuser, cport, cpass, ckeypath, alias, force, jumpHost, sshConfigHost.ProxyCommand); err != nil {
+			exiterr("setup nopass", err)
+		}
+		fmt.Printf("nopass login configured: %s -> %s@%s:%s\n", alias, cuser, chost, cport)
+		return
+	}
 	// klog.Infof("connecting to %v ..., with user: %v", expr, cuser)
 	startssh(chost, cuser, cport, cpass, ckeypath, ccmds, cmd, verbose, jumpHost, sshConfigHost.ProxyCommand)
 }

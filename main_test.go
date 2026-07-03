@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chinglinwen/goto/config"
@@ -255,6 +258,273 @@ func TestApplyCredential(t *testing.T) {
 		if gotFound != test.wantFound {
 			t.Errorf("%s: found = %v, want %v", test.name, gotFound, test.wantFound)
 		}
+	}
+}
+
+func TestNopassAlias(t *testing.T) {
+	tests := []struct {
+		target string
+		want   string
+	}{
+		{target: "vm1", want: "vm1"},
+		{target: "root@10.0.0.1", want: "10.0.0.1"},
+		{target: "root@10.0.0.1:2222", want: "10.0.0.1"},
+		{target: "10.0.0.1:2222", want: "10.0.0.1"},
+	}
+
+	for _, test := range tests {
+		got := nopassAlias(test.target)
+		if got != test.want {
+			t.Errorf("nopassAlias(%q) = %q, want %q", test.target, got, test.want)
+		}
+	}
+}
+
+func TestSSHConfigFileName(t *testing.T) {
+	tests := []struct {
+		alias string
+		want  string
+	}{
+		{alias: "10.0.0.1", want: "10.0.0.1"},
+		{alias: "vm-1", want: "vm-1"},
+		{alias: "root@10.0.0.1:2222", want: "root_10.0.0.1_2222"},
+		{alias: "../bad", want: "bad"},
+		{alias: "", want: "host"},
+	}
+
+	for _, test := range tests {
+		got := sshConfigFileName(test.alias)
+		if got != test.want {
+			t.Errorf("sshConfigFileName(%q) = %q, want %q", test.alias, got, test.want)
+		}
+	}
+}
+
+func TestBuildAuthorizedKeysCommandQuotesPublicKey(t *testing.T) {
+	key := "ssh-rsa AAAA comment'withquote"
+	got := buildAuthorizedKeysCommand(key)
+	if !strings.Contains(got, "mkdir -p ~/.ssh") {
+		t.Fatalf("command = %q, want mkdir setup", got)
+	}
+	if !strings.Contains(got, "'ssh-rsa AAAA comment'\"'\"'withquote'") {
+		t.Fatalf("command = %q, want shell-quoted key", got)
+	}
+}
+
+func TestUpsertSSHConfigEntry(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	entry := sshConfigEntry{
+		Alias:        "vm1",
+		HostName:     "10.0.0.1",
+		User:         "admin",
+		Port:         "2222",
+		IdentityFile: "/tmp/id_rsa",
+	}
+
+	if err := upsertSSHConfigEntry(path, entry, false); err != nil {
+		t.Fatalf("upsert new entry got err %v", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Host vm1\n  HostName 10.0.0.1\n  User admin\n  Port 2222\n  IdentityFile /tmp/id_rsa\n\n"
+	if string(content) != want {
+		t.Fatalf("config content = %q, want %q", string(content), want)
+	}
+
+	err = upsertSSHConfigEntry(path, entry, false)
+	if err == nil {
+		t.Fatal("upsert existing entry got nil err, want conflict")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("upsert existing err = %v, want already exists", err)
+	}
+
+	entry.User = "root"
+	if err := upsertSSHConfigEntry(path, entry, true); err != nil {
+		t.Fatalf("force upsert got err %v", err)
+	}
+	content, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "  User root\n") {
+		t.Fatalf("force content = %q, want replaced user", string(content))
+	}
+	if strings.Contains(string(content), "  User admin\n") {
+		t.Fatalf("force content = %q, still contains old user", string(content))
+	}
+}
+
+func TestUpsertSSHConfigEntryPreservesOtherBlocks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	initial := "Host old\n  HostName 10.0.0.2\n\nHost vm1\n  HostName old.example\n  User old\n\nMatch all\n  ForwardAgent no\n"
+	if err := os.WriteFile(path, []byte(initial), 0600); err != nil {
+		t.Fatal(err)
+	}
+	entry := sshConfigEntry{
+		Alias:        "vm1",
+		HostName:     "10.0.0.1",
+		User:         "admin",
+		Port:         "22",
+		IdentityFile: "/tmp/id_rsa",
+	}
+
+	if err := upsertSSHConfigEntry(path, entry, true); err != nil {
+		t.Fatalf("force upsert got err %v", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(content)
+	if !strings.Contains(got, "Host old\n  HostName 10.0.0.2\n\n") {
+		t.Fatalf("content = %q, lost old host block", got)
+	}
+	if !strings.Contains(got, "Match all\n  ForwardAgent no\n") {
+		t.Fatalf("content = %q, lost match block", got)
+	}
+	if !strings.Contains(got, "Host vm1\n  HostName 10.0.0.1\n  User admin\n") {
+		t.Fatalf("content = %q, did not replace vm1 block", got)
+	}
+}
+
+func TestEnsureSSHConfigInclude(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".ssh", "config")
+
+	if err := ensureSSHConfigInclude(path, "config.d/*"); err != nil {
+		t.Fatalf("ensure include got err %v", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "Include config.d/*\n\n" {
+		t.Fatalf("new config = %q", string(content))
+	}
+
+	if err := ensureSSHConfigInclude(path, "config.d/*"); err != nil {
+		t.Fatalf("second ensure include got err %v", err)
+	}
+	content, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(content), "Include config.d/*") != 1 {
+		t.Fatalf("config = %q, want one include", string(content))
+	}
+}
+
+func TestEnsureSSHConfigIncludePrependsExistingConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".ssh", "config")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("Host *\n  ServerAliveInterval 60\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensureSSHConfigInclude(path, "config.d/*"); err != nil {
+		t.Fatalf("ensure include got err %v", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Include config.d/*\n\nHost *\n  ServerAliveInterval 60\n"
+	if string(content) != want {
+		t.Fatalf("config = %q, want %q", string(content), want)
+	}
+}
+
+func TestUpsertGeneratedSSHConfigEntry(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, ".ssh", "config")
+	generatedPath := filepath.Join(dir, ".ssh", "config.d", "vm1")
+	entry := sshConfigEntry{
+		Alias:        "vm1",
+		HostName:     "10.0.0.1",
+		User:         "admin",
+		Port:         "22",
+		IdentityFile: "/tmp/id_rsa",
+	}
+
+	if err := upsertGeneratedSSHConfigEntry(mainPath, generatedPath, entry, false); err != nil {
+		t.Fatalf("upsert generated got err %v", err)
+	}
+	mainContent, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mainContent) != "Include config.d/*\n\n" {
+		t.Fatalf("main config = %q", string(mainContent))
+	}
+	generatedContent, err := os.ReadFile(generatedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(generatedContent), "Host vm1\n  HostName 10.0.0.1\n") {
+		t.Fatalf("generated config = %q", string(generatedContent))
+	}
+}
+
+func TestUpsertGeneratedSSHConfigEntryRefusesManualHost(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, ".ssh", "config")
+	generatedPath := filepath.Join(dir, ".ssh", "config.d", "vm1")
+	if err := os.MkdirAll(filepath.Dir(mainPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mainPath, []byte("Host vm1\n  HostName old.example\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	entry := sshConfigEntry{
+		Alias:        "vm1",
+		HostName:     "10.0.0.1",
+		User:         "admin",
+		Port:         "22",
+		IdentityFile: "/tmp/id_rsa",
+	}
+
+	err := upsertGeneratedSSHConfigEntry(mainPath, generatedPath, entry, true)
+	if err == nil {
+		t.Fatal("upsert generated got nil err, want manual host conflict")
+	}
+	if !strings.Contains(err.Error(), "edit it manually") {
+		t.Fatalf("err = %v, want manual edit message", err)
+	}
+}
+
+func TestUpsertGeneratedSSHConfigEntryRefusesOtherIncludedHost(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, ".ssh", "config")
+	generatedPath := filepath.Join(dir, ".ssh", "config.d", "vm1")
+	otherPath := filepath.Join(dir, ".ssh", "config.d", "manual")
+	if err := os.MkdirAll(filepath.Dir(otherPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(otherPath, []byte("Host vm1\n  HostName old.example\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	entry := sshConfigEntry{
+		Alias:        "vm1",
+		HostName:     "10.0.0.1",
+		User:         "admin",
+		Port:         "22",
+		IdentityFile: "/tmp/id_rsa",
+	}
+
+	err := upsertGeneratedSSHConfigEntry(mainPath, generatedPath, entry, true)
+	if err == nil {
+		t.Fatal("upsert generated got nil err, want included host conflict")
+	}
+	if !strings.Contains(err.Error(), otherPath) {
+		t.Fatalf("err = %v, want other included path", err)
 	}
 }
 
