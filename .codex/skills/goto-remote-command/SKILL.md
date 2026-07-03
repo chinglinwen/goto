@@ -29,6 +29,8 @@ go run . <host> uptime
 go run . -cmd='uname -a' <host>
 echo 'df -h' | go run . <host>
 go run . -j <jump-host> <host> uptime
+go run . -cred=vm <host> uptime
+go run . -setup-nopass -p=vm <host>
 ```
 
 For an installed binary:
@@ -38,6 +40,8 @@ goto <host> uptime
 goto -cmd='uname -a' <host>
 echo 'df -h' | goto <host>
 goto -j <jump-host> <host> uptime
+goto -cred=vm <host> uptime
+goto -setup-nopass -p=vm <host>
 ```
 
 Use `-v` only when debugging the connection path, because it intentionally enables verbose local logs:
@@ -79,12 +83,15 @@ hosts:
 Auth rules:
 
 - `-p` overrides the password for a single command.
-- If `-p` matches a configured credential name, use that credential's password.
+- If `-p` matches a configured credential name, reuse that credential's user, password, and keypath unless `-user` or `-keypath` explicitly overrides them.
+- `-cred=<name>` selects a configured credential for auth and fails if it does not exist.
+- `-show-cred=<name>` prints credential info and exits.
 - If `-p` does not match a credential name, treat the value as a plain password.
 - `-p base64:<value>` decodes a base64 password.
 - `pass: base64:<value>` is also supported in config.
 - If password is empty, `goto` uses key-based auth.
 - `keypath` is a private key path, for example `~/.ssh/id_rsa`, not a `.pub` file.
+- Quote `pass:` values in `goto.yaml` when they contain YAML special characters such as `%`.
 - Inline targets can include user and port: `root@10.47.120.11:2222`.
 - `-j` enables a jump host. The jump host is resolved from local config or inline `user@host:port`.
 - Host config can set `jump: <name>` as the default jump host for that target.
@@ -92,11 +99,37 @@ Auth rules:
 - Jump host auth is key-only; its config `pass` is ignored.
 - Do not read config from the jump host. Target and jump host config both come from the local config file.
 
+## Setup Nopass Login
+
+Use setup mode to install the selected local public key on the target and create an OpenSSH config entry:
+
+```bash
+goto -setup-nopass -p=vm 10.47.120.11
+goto -setup-nopass -force -p=vm 10.47.120.11
+```
+
+Known-good `hhy` example:
+
+```text
+$ goto -setup-nopass -p=hhy 10.248.26.16
+nopass login configured: 10.248.26.16 -> hhy-ceph@10.248.26.16:22
+```
+
+Behavior:
+
+- `-setup-nopass` appends the selected public key to remote `~/.ssh/authorized_keys` idempotently.
+- The selected key is the credential `keypath`, explicit `-keypath`, or default `~/.ssh/id_rsa`.
+- The main `~/.ssh/config` is given a top-level `Include config.d/*` line when missing.
+- Generated host entries are written one file per host/IP under `~/.ssh/config.d/<host>`.
+- If the exact `Host` entry already exists in the main config or another included file, setup stops.
+- `-force` replaces only the generated per-host file for that exact host; it does not overwrite manual config elsewhere.
+
 ## Editing The Implementation
 
 Important files:
 
 - `main.go`: CLI flags, host-first argument parsing, stdin command fallback, password decoding, exit-status propagation.
+- `nopass.go`: `-setup-nopass` public-key installation and generated OpenSSH config entries.
 - `ssh/ssh.go`: SSH session setup, jump host tunneling, interactive shell, batch `Run`, stdout/stderr wiring, key auth.
 - `config/config.go`: config search order and host/credential lookup.
 - `README.md`: user-facing examples should match `goto -h`.
