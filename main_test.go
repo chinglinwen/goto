@@ -311,6 +311,15 @@ func TestBuildAuthorizedKeysCommandQuotesPublicKey(t *testing.T) {
 	}
 }
 
+func TestSetupNopassKeyPathDefaultsWhenEmpty(t *testing.T) {
+	if got := setupNopassKeyPath(""); got != defaultKeyPath() {
+		t.Fatalf("setupNopassKeyPath(empty) = %q, want %q", got, defaultKeyPath())
+	}
+	if got := setupNopassKeyPath("/tmp/id_rsa"); got != "/tmp/id_rsa" {
+		t.Fatalf("setupNopassKeyPath(explicit) = %q, want /tmp/id_rsa", got)
+	}
+}
+
 func TestUpsertSSHConfigEntry(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config")

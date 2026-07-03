@@ -10,6 +10,7 @@ import (
 )
 
 func setupNopass(host, user, port, pass, keypath, alias string, force bool, jumpHost *ssh.JumpHost, proxyCommand string) error {
+	keypath = setupNopassKeyPath(keypath)
 	entry := sshConfigEntry{
 		Alias:        alias,
 		HostName:     host,
@@ -45,6 +46,13 @@ func setupNopass(host, user, port, pass, keypath, alias string, force bool, jump
 		return err
 	}
 	return upsertGeneratedSSHConfigEntry(mainConfigPath, generatedConfigPath, entry, force)
+}
+
+func setupNopassKeyPath(keypath string) string {
+	if keypath == "" {
+		return defaultKeyPath()
+	}
+	return keypath
 }
 
 func buildAuthorizedKeysCommand(publicKey string) string {
