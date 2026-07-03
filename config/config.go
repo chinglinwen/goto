@@ -28,12 +28,15 @@ type Config struct {
 }
 
 func ParseConfig() (*Config, error) {
-	var lastErr error
 	for _, path := range configFiles() {
 		v := viper.New()
 		v.SetConfigFile(path)
 		if err := v.ReadInConfig(); err != nil {
-			lastErr = err
+			if _, statErr := os.Stat(path); statErr == nil {
+				return nil, err
+			} else if !os.IsNotExist(statErr) {
+				return nil, statErr
+			}
 			continue
 		}
 		klog.V(2).Info("read from config: ", v.ConfigFileUsed())
@@ -43,7 +46,7 @@ func ParseConfig() (*Config, error) {
 		}
 		return c, nil
 	}
-	return nil, lastErr
+	return &Config{}, nil
 }
 
 func configFiles() []string {

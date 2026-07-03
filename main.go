@@ -24,10 +24,11 @@ func helpfunc() {
 	fmt.Print(`
 Usage: goto <name>
        goto -V
-       goto -cred=<name>
+       goto -show-cred=<name>
        goto <name|ip[:port]|expr|pattern> <cmd...>
        echo 'uptime' | goto <name|ip[:port]|expr|pattern>
        goto [-cmd='uptime'] <name|ip[:port]|expr|pattern>
+       goto [-cred=<name>] <ip[:port]>
        goto [-p=password] <ip[:port]>
        goto [-j=<jump>] <name|ip[:port]|expr|pattern> <cmd...>
        goto [-port=2222] [-initcmds='sudo su -\n'] <name|ip[:port]|expr|pattern>
@@ -35,7 +36,8 @@ Usage: goto <name>
 Examples:
   goto 11                                      # interactive login using config host 11
   goto root@10.47.120.11:2222                 # interactive login with inline user and port
-  goto -p=vm 10.47.120.11                     # use user+password from configured credential vm
+  goto -cred=vm 10.47.120.11                  # use user+password+keypath from configured credential vm
+  goto -p=vm 10.47.120.11                     # use user+password+keypath from configured credential vm
   goto -user=root -p=vm 10.47.120.11          # override user, use password from credential vm
   goto -p=password 10.47.120.11               # direct plain password login
   goto -user=root -p=base64:cGFzc3dvcmQ= 10.47.120.11
@@ -77,8 +79,10 @@ If pass is empty, goto uses key-based auth with keypath.
 Config is read from ~/.ssh/goto.yaml; legacy ~/.goterm/config.yaml still works.
 initcmds is only for interactive mode because it writes commands into the opened shell after login. Batch mode ignores it.
 Use -p with a credential name to reuse its user, password and keypath; or with any other value as a plain password.
-Use -cred=<name> to show credential info (user, pass, keypath) and exit.
+Use -cred=<name> to select a configured credential for login.
+Use -show-cred=<name> to show credential info (user, pass, keypath) and exit.
 Use pass: base64:<value> or -p base64:<value> to decode a base64 password.
+Quote pass values in goto.yaml when they contain YAML special characters such as %.
 Use host jump: <name> to set a default jump host. Use -j with a configured host name or inline user@host:port to override it.
 Jump host config is resolved locally and uses key auth.
 goto also reads ~/.ssh/config for HostName, User, Port, IdentityFile, and ProxyCommand.
@@ -87,18 +91,19 @@ Batch command mode writes only remote stdout to stdout, remote stderr to stderr,
 }
 func main() {
 	var (
-		port      string
-		user      string
-		pass      string
-		keyPath   string
-		jump      string
-		cmds      string
-		cmd       string
-		label     string
-		filter    string
-		verbose   bool
-		showVer   bool
-		showCred  string
+		port     string
+		user     string
+		pass     string
+		keyPath  string
+		jump     string
+		cmds     string
+		cmd      string
+		label    string
+		filter   string
+		cred     string
+		verbose  bool
+		showVer  bool
+		showCred string
 	)
 	flag.StringVar(&port, "port", "", "port to connect")
 	flag.StringVar(&user, "user", "", "user to auth")
@@ -109,7 +114,8 @@ func main() {
 	flag.StringVar(&cmd, "cmd", "", "command to run in batch mode")
 	flag.StringVar(&label, "l", "", "label filter for host")
 	flag.StringVar(&filter, "f", "", "regexp filter for host")
-	flag.StringVar(&showCred, "cred", "", "show credential info by name and exit")
+	flag.StringVar(&cred, "cred", "", "credential name for auth")
+	flag.StringVar(&showCred, "show-cred", "", "show credential info by name and exit")
 	flag.BoolVar(&verbose, "v", false, "verbose output")
 	flag.BoolVar(&showVer, "V", false, "print version")
 	flag.Usage = helpfunc
@@ -127,14 +133,10 @@ func main() {
 
 	c, configErr := config.ParseConfig()
 	if configErr != nil {
-		klog.V(2).Infof("parse config err: %v", configErr)
-		c = &config.Config{}
+		exiterr("parse config ", configErr)
 	}
 
 	if len(showCred) != 0 {
-		if configErr != nil {
-			exiterr("parse config ", configErr)
-		}
 		cred := c.GetCredByName(showCred)
 		if cred == nil {
 			exit("credential '" + showCred + "' not found")
@@ -158,9 +160,6 @@ func main() {
 	klog.V(2).Info("debug info...")
 
 	if len(label) != 0 {
-		if configErr != nil {
-			exiterr("parse config ", configErr)
-		}
 		for _, v := range c.Hosts {
 			if v.Label == label {
 				fmt.Printf("name: %v, host: %v\n", v.Name, v.Host)
@@ -169,9 +168,6 @@ func main() {
 		return
 	}
 	if len(filter) != 0 {
-		if configErr != nil {
-			exiterr("parse config ", configErr)
-		}
 		f := regexp.MustCompile(filter)
 		for _, v := range c.Hosts {
 			if f.MatchString(v.Label) || f.MatchString(v.Name) || f.MatchString(v.Host) {
@@ -222,7 +218,7 @@ func main() {
 
 	klog.V(2).Info("get cred: ", ccred)
 	cuser, cpass, ckeypath := c.GetCred(ccred)
-	klog.V(2).Infof("cuser: %v,cpass: %v, ckeypath: %v", cuser, cpass, ckeypath)
+	klog.V(2).Infof("cuser: %v,cpass: ***, ckeypath: %v", cuser, ckeypath)
 	if len(port) != 0 {
 		cport = port
 	}
@@ -232,17 +228,17 @@ func main() {
 	if !userSet && sshConfigHost.User != "" {
 		cuser = sshConfigHost.User
 	}
+	if len(cred) != 0 {
+		var found bool
+		cuser, cpass, ckeypath, found = applyCredential(c, cred, cuser, cpass, ckeypath, userSet, keyPathSet)
+		if !found {
+			exit("credential '" + cred + "' not found")
+		}
+	}
 	if len(pass) != 0 {
-		pcred := c.GetCredByName(pass)
-		if pcred != nil {
-			cpass = pcred.Pass
-			if !userSet {
-				cuser = pcred.User
-			}
-			if !keyPathSet && len(pcred.Keypath) != 0 {
-				ckeypath = pcred.Keypath
-			}
-		} else {
+		var found bool
+		cuser, cpass, ckeypath, found = applyCredential(c, pass, cuser, cpass, ckeypath, userSet, keyPathSet)
+		if !found {
 			cpass = pass
 		}
 	}
@@ -282,7 +278,7 @@ func main() {
 		}
 	}
 
-	klog.V(2).Infof("chost: %v, cport: %v, cuser: %v, cpass: %v, ckeypath: %v, ccmds: %v", chost, cport, cuser, cpass, ckeypath, ccmds)
+	klog.V(2).Infof("chost: %v, cport: %v, cuser: %v, cpass: ***, ckeypath: %v, ccmds: %v", chost, cport, cuser, ckeypath, ccmds)
 	// klog.Infof("connecting to %v ..., with user: %v", expr, cuser)
 	startssh(chost, cuser, cport, cpass, ckeypath, ccmds, cmd, verbose, jumpHost, sshConfigHost.ProxyCommand)
 }
@@ -326,6 +322,25 @@ func resolvePassword(c *config.Config, pass string) string {
 	return pass
 }
 
+func applyCredential(c *config.Config, name, currentUser, currentPass, currentKeypath string, userSet, keyPathSet bool) (user, pass, keypath string, found bool) {
+	user, pass, keypath = currentUser, currentPass, currentKeypath
+	if c == nil {
+		return user, pass, keypath, false
+	}
+	cred := c.GetCredByName(name)
+	if cred == nil {
+		return user, pass, keypath, false
+	}
+	pass = cred.Pass
+	if !userSet && len(cred.User) != 0 {
+		user = cred.User
+	}
+	if !keyPathSet && len(cred.Keypath) != 0 {
+		keypath = cred.Keypath
+	}
+	return user, pass, keypath, true
+}
+
 func resolveJumpHost(c *config.Config, expr string) (*ssh.JumpHost, error) {
 	if c == nil {
 		c = &config.Config{}
@@ -366,12 +381,7 @@ func startssh(ip, user, port, pass, keypath, cmds, cmd string, verbose bool, jum
 	}
 
 	if len(cmd) == 0 || verbose {
-		currentUser, _ := osuser.Current()
-		if user == currentUser.Username {
-			klog.Infof("connecting to ip: %v:%v ..., with user: %v, pass: ***", ip, port, user)
-		} else {
-			klog.Infof("connecting to ip: %v:%v ..., with user: %v, pass: %v", ip, port, user, pass)
-		}
+		klog.Infof("connecting to ip: %v:%v ..., with user: %v, pass: ***", ip, port, user)
 	}
 
 	options := []ssh.Option{

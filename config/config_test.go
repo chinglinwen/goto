@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +39,47 @@ hosts:
 		t.Fatalf("creds len = %d, want 1", len(c.Creds))
 	}
 	pretty("c", c)
+}
+
+func TestParseConfigReturnsMalformedExistingFileError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "goto.yaml")
+	if err := os.WriteFile(configPath, []byte(`creds:
+- name: hhy
+  user: hhy-ceph
+  pass: %invalid
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ParseConfig()
+	if err == nil {
+		t.Fatal("ParseConfig got nil err, want malformed yaml error")
+	}
+	if !strings.Contains(err.Error(), "cannot start any token") {
+		t.Fatalf("ParseConfig err = %v, want malformed yaml token error", err)
+	}
+}
+
+func TestParseConfigNoConfigReturnsEmptyConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	c, err := ParseConfig()
+	if err != nil {
+		t.Fatalf("ParseConfig got err %v, want nil", err)
+	}
+	if len(c.Creds) != 0 {
+		t.Fatalf("creds len = %d, want 0", len(c.Creds))
+	}
+	if len(c.Hosts) != 0 {
+		t.Fatalf("hosts len = %d, want 0", len(c.Hosts))
+	}
 }
 
 func TestParseSSHConfigHost(t *testing.T) {

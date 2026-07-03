@@ -171,6 +171,93 @@ func TestResolvePassword(t *testing.T) {
 	}
 }
 
+func TestApplyCredential(t *testing.T) {
+	c := &config.Config{
+		Creds: []struct {
+			Name    string `yaml:"name"`
+			User    string `yaml:"user"`
+			Pass    string `yaml:"pass"`
+			Keypath string `yaml:"keypath"`
+		}{
+			{
+				Name:    "vm",
+				User:    "admin",
+				Pass:    "secret",
+				Keypath: "/tmp/key",
+			},
+		},
+	}
+
+	tests := []struct {
+		name           string
+		cred           string
+		currentUser    string
+		currentPass    string
+		currentKeypath string
+		userSet        bool
+		keyPathSet     bool
+		wantUser       string
+		wantPass       string
+		wantKeypath    string
+		wantFound      bool
+	}{
+		{
+			name:        "credential applies user password and keypath",
+			cred:        "vm",
+			wantUser:    "admin",
+			wantPass:    "secret",
+			wantKeypath: "/tmp/key",
+			wantFound:   true,
+		},
+		{
+			name:        "explicit user is preserved",
+			cred:        "vm",
+			currentUser: "root",
+			userSet:     true,
+			wantUser:    "root",
+			wantPass:    "secret",
+			wantKeypath: "/tmp/key",
+			wantFound:   true,
+		},
+		{
+			name:           "explicit keypath is preserved",
+			cred:           "vm",
+			currentKeypath: "/tmp/current-key",
+			keyPathSet:     true,
+			wantUser:       "admin",
+			wantPass:       "secret",
+			wantKeypath:    "/tmp/current-key",
+			wantFound:      true,
+		},
+		{
+			name:           "unknown credential leaves values unchanged",
+			cred:           "missing",
+			currentUser:    "root",
+			currentPass:    "password",
+			currentKeypath: "/tmp/current-key",
+			wantUser:       "root",
+			wantPass:       "password",
+			wantKeypath:    "/tmp/current-key",
+		},
+	}
+
+	for _, test := range tests {
+		gotUser, gotPass, gotKeypath, gotFound := applyCredential(c, test.cred, test.currentUser, test.currentPass, test.currentKeypath, test.userSet, test.keyPathSet)
+		if gotUser != test.wantUser {
+			t.Errorf("%s: user = %q, want %q", test.name, gotUser, test.wantUser)
+		}
+		if gotPass != test.wantPass {
+			t.Errorf("%s: pass = %q, want %q", test.name, gotPass, test.wantPass)
+		}
+		if gotKeypath != test.wantKeypath {
+			t.Errorf("%s: keypath = %q, want %q", test.name, gotKeypath, test.wantKeypath)
+		}
+		if gotFound != test.wantFound {
+			t.Errorf("%s: found = %v, want %v", test.name, gotFound, test.wantFound)
+		}
+	}
+}
+
 func TestResolveJumpHost(t *testing.T) {
 	c := &config.Config{
 		Creds: []struct {

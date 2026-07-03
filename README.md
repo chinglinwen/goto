@@ -36,6 +36,8 @@ go install github.com/chinglinwen/goto@latest
 ```bash
   -cmd string
     	command to run in batch mode
+  -cred string
+        credential name for auth
   -f string
     	regexp filter for host
   -initcmds string
@@ -50,6 +52,8 @@ go install github.com/chinglinwen/goto@latest
     	credential name or plain password; use base64:<value> to decode
   -port string
     	port to connect
+  -show-cred string
+        show credential info by name and exit
   -user string
     	user to auth
   -v	verbose output
@@ -57,18 +61,22 @@ go install github.com/chinglinwen/goto@latest
 
 Usage: goto <name>
        goto -V
+       goto -show-cred=<name>
        goto <name|ip[:port]|expr|pattern> <cmd...>
        echo 'uptime' | goto <name|ip[:port]|expr|pattern>
        goto [-cmd='uptime'] <name|ip[:port]|expr|pattern>
-       goto [-user=root] [-p=password] <ip[:port]>
+       goto [-cred=<name>] <ip[:port]>
+       goto [-p=password] <ip[:port]>
        goto [-j=<jump>] <name|ip[:port]|expr|pattern> <cmd...>
-       goto [-port=2222] [-user=userfoo] [-initcmds='sudo su -\n'] <name|ip[:port]|expr|pattern>
+       goto [-port=2222] [-initcmds='sudo su -\n'] <name|ip[:port]|expr|pattern>
 
 Examples:
   goto 11                                      # interactive login using config host 11
   goto root@10.47.120.11:2222                 # interactive login with inline user and port
-  goto -user=root -p=vm 10.47.120.11          # use password from configured credential vm
-  goto -user=root -p=password 10.47.120.11    # direct plain password login
+  goto -cred=vm 10.47.120.11                  # use user+password+keypath from configured credential vm
+  goto -p=vm 10.47.120.11                     # use user+password+keypath from configured credential vm
+  goto -user=root -p=vm 10.47.120.11          # override user, use password from credential vm
+  goto -p=password 10.47.120.11               # direct plain password login
   goto -user=root -p=base64:cGFzc3dvcmQ= 10.47.120.11
   goto -keypath=~/.ssh/id_rsa root@10.47.120.11
   goto 11 uptime                              # batch command; uses host jump config when jump is set
@@ -107,8 +115,11 @@ keypath is a private key file, for example ~/.ssh/id_rsa, not id_rsa.pub.
 If pass is empty, goto uses key-based auth with keypath.
 Config is read from ~/.ssh/goto.yaml; legacy ~/.goterm/config.yaml still works.
 initcmds is only for interactive mode because it writes commands into the opened shell after login. Batch mode ignores it.
-Use -p with a credential name to reuse its password, or with any other value as a plain password.
+Use -cred=<name> to select a configured credential for login.
+Use -p with a credential name to reuse its user, password and keypath; or with any other value as a plain password.
+Use -show-cred=<name> to show credential info (user, pass, keypath) and exit.
 Use pass: base64:<value> or -p base64:<value> to decode a base64 password.
+Quote pass values in goto.yaml when they contain YAML special characters such as %.
 Use host jump: <name> to set a default jump host. Use -j with a configured host name or inline user@host:port to override it.
 Jump host config is resolved locally and uses key auth.
 goto also reads ~/.ssh/config for HostName, User, Port, IdentityFile, and ProxyCommand.
