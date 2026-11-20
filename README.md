@@ -170,6 +170,22 @@ Notes:
 * The forward lives as long as the goto session; it is not a replacement for real egress on the
   remote network.
 
+## agent skill
+
+`docs/skills/goto-remote-command/SKILL.md` documents this CLI for coding agents: batch vs
+interactive contract, host access rules, config pre-flight, and `-R` remote forwards.
+
+Link it into your local skills directory with one command:
+
+```bash
+./scripts/install-skill.sh
+```
+
+It links `docs/skills/goto-remote-command` to `~/.claude/skills/goto-remote-command`, and also to
+`~/.agents/skills` when that exists as a separate directory. Existing symlinks are replaced, real
+directories are backed up first, and rerunning it is safe. Set `SKILL_DIRS` to override the target
+directories.
+
 ## Acknowledgements
 
 Thanks to https://mritd.me/2018/11/09/go-interactive-shell/
