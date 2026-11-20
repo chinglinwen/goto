@@ -124,13 +124,47 @@ Behavior:
 - If the exact `Host` entry already exists in the main config or another included file, setup stops.
 - `-force` replaces only the generated per-host file for that exact host; it does not overwrite manual config elsewhere.
 
+## Remote Forward (-R)
+
+`-R [bind_address:]port:host:hostport` opens a listener on the **remote** host that forwards each
+connection back to the **local** machine, where `host:hostport` is dialed. Repeat the flag for
+several forwards. goto keeps the listeners for the whole session.
+
+The usual reason to need it: a remote host with no egress, where the working proxy lives on the
+operator's laptop.
+
+```bash
+goto -R 40000:127.0.0.1:40000 -p xc 10.59.72.36                          # same port both sides, usual case
+goto -R 14000:127.0.0.1:40000 -p xc 10.59.72.36                          # remote 14000 -> local 40000
+goto -R 14000:127.0.0.1:40000 -R 14001:127.0.0.1:40000 -p xc 10.59.72.36  # repeatable
+```
+
+Then inside the remote shell: `export http_proxy=http://127.0.0.1:14000 https_proxy=$http_proxy`.
+`-initcmds` can do that at login.
+
+Facts worth remembering (verified 2026-11-20 against 10.59.72.36):
+
+- Without a bind address the listener binds remote `localhost`, so a network port scan of the
+  remote host does not see it, and only processes on that host can use it. This is the safe form.
+- `0.0.0.0` or `*` needs `GatewayPorts yes` on the remote sshd; most hosts run `gatewayports no`,
+  so keep the loopback form instead of asking the owner to widen it.
+- Check the remote side supports it first: `sshd -T | grep -i allowtcpforwarding` must say `yes`.
+- Env vars only help the shell you exported them in. Package managers and daemons need their own
+  config (yum.conf `proxy=`, docker `~/.docker/config.json` or daemon proxies).
+- The forward dies with the goto session. It is a debugging and access bridge, not a replacement
+  for real egress on the remote network.
+
+The implementation lives in `ssh/ssh.go`: `ParseRemoteForward` parses the spec,
+`startRemoteForwards` opens `client.Listen` right after `dialTarget`, `forward` copies bytes, and
+`Close` tears the listeners down.
+
 ## Editing The Implementation
 
 Important files:
 
 - `main.go`: CLI flags, host-first argument parsing, stdin command fallback, password decoding, exit-status propagation.
 - `nopass.go`: `-setup-nopass` public-key installation and generated OpenSSH config entries.
-- `ssh/ssh.go`: SSH session setup, jump host tunneling, interactive shell, batch `Run`, stdout/stderr wiring, key auth.
+- `ssh/ssh.go`: SSH session setup, jump host tunneling, interactive shell, batch `Run`, stdout/stderr wiring, key auth, remote forwards.
 - `config/config.go`: config search order and host/credential lookup.
 - `README.md`: user-facing examples should match `goto -h`.
 
