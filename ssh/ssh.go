@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -43,6 +44,9 @@ type SSHTerminal struct {
 	stdout io.Reader
 	stdin  io.Writer
 	stderr io.Reader
+
+	remoteForwards []string
+	listeners      []net.Listener
 }
 
 type JumpHost struct {
@@ -119,6 +123,19 @@ func SetProxyCommand(command string) Option {
 	}
 }
 
+// SetRemoteForwards registers remote forward specs, each in the form
+// [bind_address:]port:host:hostport. The target host:hostport is dialed from
+// the local machine, the listener is opened on the remote side.
+func SetRemoteForwards(specs []string) Option {
+	return func(t *SSHTerminal) {
+		if len(specs) == 0 {
+			return
+		}
+		klog.V(2).Info("set remote forwards: ", specs)
+		t.remoteForwards = append(t.remoteForwards, specs...)
+	}
+}
+
 func New(ip, user, pass string, options ...Option) *SSHTerminal {
 	t := &SSHTerminal{
 		ip:          ip,
@@ -139,6 +156,11 @@ func (t *SSHTerminal) connect() error {
 		return err
 	}
 	t.client = client
+
+	if err := t.startRemoteForwards(); err != nil {
+		_ = t.Close()
+		return err
+	}
 
 	session, err := client.NewSession()
 	if err != nil {
@@ -194,6 +216,71 @@ func (t *SSHTerminal) dialTarget() (*ssh.Client, error) {
 		return nil, err
 	}
 	return ssh.NewClient(clientConn, chans, reqs), nil
+}
+
+// ParseRemoteForward splits a forward spec of the form
+// [bind_address:]port:host:hostport into the remote listen address and the
+// local dial address.
+func ParseRemoteForward(spec string) (listenAddr, dialAddr string, err error) {
+	parts := strings.Split(spec, ":")
+	var bindAddr, bindPort, host, hostPort string
+	switch len(parts) {
+	case 3:
+		bindAddr, bindPort, host, hostPort = "localhost", parts[0], parts[1], parts[2]
+	case 4:
+		bindAddr, bindPort, host, hostPort = parts[0], parts[1], parts[2], parts[3]
+	default:
+		return "", "", fmt.Errorf("invalid -R %q: want [bind_address:]port:host:hostport", spec)
+	}
+	if len(bindAddr) == 0 || len(host) == 0 {
+		return "", "", fmt.Errorf("invalid -R %q: empty bind address or host", spec)
+	}
+	for _, p := range []string{bindPort, hostPort} {
+		n, convErr := strconv.Atoi(p)
+		if convErr != nil || n < 1 || n > 65535 {
+			return "", "", fmt.Errorf("invalid -R %q: bad port %q", spec, p)
+		}
+	}
+	return net.JoinHostPort(bindAddr, bindPort), net.JoinHostPort(host, hostPort), nil
+}
+
+func (t *SSHTerminal) startRemoteForwards() error {
+	for _, spec := range t.remoteForwards {
+		listenAddr, dialAddr, err := ParseRemoteForward(spec)
+		if err != nil {
+			return err
+		}
+		listener, err := t.client.Listen("tcp", listenAddr)
+		if err != nil {
+			return fmt.Errorf("remote forward %q: %w", spec, err)
+		}
+		t.listeners = append(t.listeners, listener)
+		klog.V(2).Info("remote forward listening: ", listenAddr, " -> ", dialAddr)
+		go t.forward(listener, dialAddr)
+	}
+	return nil
+}
+
+func (t *SSHTerminal) forward(listener net.Listener, dialAddr string) {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			defer conn.Close()
+			local, err := net.Dial("tcp", dialAddr)
+			if err != nil {
+				klog.Errorf("remote forward dial %v err: %v", dialAddr, err)
+				return
+			}
+			defer local.Close()
+			done := make(chan struct{}, 2)
+			go func() { _, _ = io.Copy(local, conn); done <- struct{}{} }()
+			go func() { _, _ = io.Copy(conn, local); done <- struct{}{} }()
+			<-done
+		}()
+	}
 }
 
 func (t *SSHTerminal) dialProxyCommand() (net.Conn, error) {
@@ -299,6 +386,12 @@ func ExitStatus(err error) (int, bool) {
 
 func (t *SSHTerminal) Close() error {
 	var closeErr error
+	for _, listener := range t.listeners {
+		if err := listener.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	t.listeners = nil
 	if t.sess != nil {
 		if err := t.sess.Close(); err != nil && err != io.EOF {
 			closeErr = err

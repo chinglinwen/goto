@@ -33,6 +33,7 @@ Usage: goto <name>
        goto -setup-nopass [-force] <name|ip[:port]>
        goto [-j=<jump>] <name|ip[:port]|expr|pattern> <cmd...>
        goto [-port=2222] [-initcmds='sudo su -\n'] <name|ip[:port]|expr|pattern>
+       goto -R [bind_address:]port:host:hostport <name|ip[:port]|expr|pattern>
 
 Examples:
   goto 11                                      # interactive login using config host 11
@@ -54,6 +55,8 @@ Examples:
   goto -l prod                                # list hosts by label
   goto -f '10\.47\.120'                       # list hosts by regexp
   goto -initcmds='sudo su -\n' 11             # interactive login, then run sudo su -
+  goto -R 40000:127.0.0.1:40000 11           # remote 127.0.0.1:40000 -> local :40000
+  goto -R 0.0.0.0:8080:10.0.0.5:80 11        # repeatable; needs GatewayPorts on the remote sshd
 
 Config example:
   $ cat ~/.ssh/goto.yaml
@@ -92,6 +95,9 @@ Use host jump: <name> to set a default jump host. Use -j with a configured host 
 Jump host config is resolved locally and uses key auth.
 goto also reads ~/.ssh/config for HostName, User, Port, IdentityFile, and ProxyCommand.
 Batch command mode writes only remote stdout to stdout, remote stderr to stderr, and exits with the remote command status.
+Use -R to open a remote forward on the remote side; repeat the flag for several forwards.
+The listener is bound where the remote sshd allows it, so 0.0.0.0 needs GatewayPorts yes on the remote.
+The -R target host:hostport is dialed from the local machine, and forwards stay open until goto exits.
 `)
 }
 func main() {
@@ -111,6 +117,7 @@ func main() {
 		showVer  bool
 		showCred string
 		nopass   bool
+		forwards forwardList
 	)
 	flag.StringVar(&port, "port", "", "port to connect")
 	flag.StringVar(&user, "user", "", "user to auth")
@@ -126,6 +133,7 @@ func main() {
 	flag.BoolVar(&nopass, "setup-nopass", false, "install public key on target and save ~/.ssh/config.d/<host> entry")
 	flag.BoolVar(&force, "force", false, "replace existing exact Host entry when used with -setup-nopass")
 	flag.BoolVar(&verbose, "v", false, "verbose output")
+	flag.Var(&forwards, "R", "remote port forward, repeatable: [bind_address:]port:host:hostport")
 	flag.BoolVar(&showVer, "V", false, "print version")
 	flag.Usage = helpfunc
 	klogFlags := flag.NewFlagSet("klog", flag.ContinueOnError)
@@ -138,6 +146,12 @@ func main() {
 	}
 	if verbose {
 		_ = klogFlags.Set("v", "2")
+	}
+
+	for _, spec := range forwards {
+		if _, _, err := ssh.ParseRemoteForward(spec); err != nil {
+			exiterr("parse -R", err)
+		}
 	}
 
 	c, configErr := config.ParseConfig()
@@ -303,7 +317,19 @@ func main() {
 		return
 	}
 	// klog.Infof("connecting to %v ..., with user: %v", expr, cuser)
-	startssh(chost, cuser, cport, cpass, ckeypath, ccmds, cmd, verbose, jumpHost, sshConfigHost.ProxyCommand)
+	startssh(chost, cuser, cport, cpass, ckeypath, ccmds, cmd, verbose, jumpHost, sshConfigHost.ProxyCommand, forwards)
+}
+
+// forwardList collects repeatable -R forward specs.
+type forwardList []string
+
+func (f *forwardList) String() string {
+	return strings.Join(*f, ",")
+}
+
+func (f *forwardList) Set(v string) error {
+	*f = append(*f, v)
+	return nil
 }
 
 func readCommandFromStdin() (string, error) {
@@ -391,7 +417,7 @@ func resolveJumpHost(c *config.Config, expr string) (*ssh.JumpHost, error) {
 	}, nil
 }
 
-func startssh(ip, user, port, pass, keypath, cmds, cmd string, verbose bool, jumpHost *ssh.JumpHost, proxyCommand string) {
+func startssh(ip, user, port, pass, keypath, cmds, cmd string, verbose bool, jumpHost *ssh.JumpHost, proxyCommand string, forwards []string) {
 	tuser, tip, tport := parseHost(ip, user, port)
 	if len(tip) != 0 {
 		ip = tip
@@ -416,6 +442,9 @@ func startssh(ip, user, port, pass, keypath, cmds, cmd string, verbose bool, jum
 	}
 	if proxyCommand != "" {
 		options = append(options, ssh.SetProxyCommand(proxyCommand))
+	}
+	if len(forwards) != 0 {
+		options = append(options, ssh.SetRemoteForwards(forwards))
 	}
 	if len(cmd) == 0 {
 		options = append(options, ssh.SetInitCmds(cmds))

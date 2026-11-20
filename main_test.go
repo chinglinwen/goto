@@ -654,3 +654,19 @@ func TestGetHostReturnsJump(t *testing.T) {
 		t.Errorf("GetHost jump = %q, want bastion", jump)
 	}
 }
+
+func TestForwardListFlag(t *testing.T) {
+	var list forwardList
+	if err := list.Set("40000:127.0.0.1:40000"); err != nil {
+		t.Fatalf("Set err: %v", err)
+	}
+	if err := list.Set("8080:10.0.0.5:80"); err != nil {
+		t.Fatalf("Set err: %v", err)
+	}
+	if got, want := list.String(), "40000:127.0.0.1:40000,8080:10.0.0.5:80"; got != want {
+		t.Fatalf("String() = %q, want %q", got, want)
+	}
+	if len(list) != 2 {
+		t.Fatalf("len(list) = %d, want 2", len(list))
+	}
+}

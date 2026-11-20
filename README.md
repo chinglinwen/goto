@@ -24,6 +24,7 @@ Therefore this tool, also for easier hosts management.
 * Config file for hosts and credentials
 * Read HostName/User/Port/IdentityFile/ProxyCommand from ~/.ssh/config
 * One line ssh login(with password, if you like)
+* Remote port forward(-R), repeatable
 
 ## install
 
@@ -133,7 +134,41 @@ Use host jump: <name> to set a default jump host. Use -j with a configured host 
 Jump host config is resolved locally and uses key auth.
 goto also reads ~/.ssh/config for HostName, User, Port, IdentityFile, and ProxyCommand.
 Batch command mode writes only remote stdout to stdout, remote stderr to stderr, and exits with the remote command status.
+Use -R to open a remote forward on the remote side; repeat the flag for several forwards.
+The listener is bound where the remote sshd allows it, so 0.0.0.0 needs GatewayPorts yes on the remote.
+The -R target host:hostport is dialed from the local machine, and forwards stay open until goto exits.
 ```
+
+## remote forward
+
+`-R [bind_address:]port:host:hostport` opens a listener on the remote host that forwards back to
+the local machine. It is repeatable.
+
+The common use is giving a host that has no internet a proxy that runs on your laptop:
+
+```bash
+# in the goto session, remote 127.0.0.1:14000 is the local http proxy on 127.0.0.1:40000
+goto -R 14000:127.0.0.1:40000 -p xc 10.59.72.36
+
+# then inside that remote shell
+export http_proxy=http://127.0.0.1:14000 https_proxy=http://127.0.0.1:14000
+```
+
+Or set it automatically at login:
+
+```bash
+goto -R 14000:127.0.0.1:40000 \
+  -initcmds='export http_proxy=http://127.0.0.1:14000 https_proxy=$http_proxy\n' \
+  -p xc 10.59.72.36
+```
+
+Notes:
+
+* Without a bind address the listener binds `localhost` on the remote side, so nothing is exposed
+  to the network and a port scan of the remote host will not see it.
+* `0.0.0.0` only works when the remote sshd has `GatewayPorts yes`, which most hosts do not.
+* The forward lives as long as the goto session; it is not a replacement for real egress on the
+  remote network.
 
 ## Acknowledgements
 
