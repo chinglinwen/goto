@@ -210,6 +210,32 @@ Behavior:
 - If the exact `Host` entry already exists in the main config or another included file, setup stops.
 - `-force` replaces only the generated per-host file for that exact host; it does not overwrite manual config elsewhere.
 
+## File Transfer (goto put / goto get)
+
+`goto put [-r] [-v] <local> <remote>` uploads one local path; `goto get [-r]
+[-v] <remote> <local>` downloads one remote path to the local machine. A
+remote side parses as `[user@]host:path` (scp semantics: split at the first
+`:`, only when the text before it contains no `/`). One source, one
+destination; when the destination is an existing directory or ends with `/`,
+the source is copied into it under its base name, otherwise the destination is
+the exact target path with missing parents created. `-r` is required for
+directories; symlinks in a recursive tree are rejected with the offending path.
+The remote side resolves through the same target resolution as login
+(goto.yaml, `~/.ssh/config`, `-cred/-p/-user/-port/-j`), and the remote spec
+has no port field — use `-port` or config.
+
+```bash
+goto put file.txt 11:/root/            # upload
+goto put -r ./dir 11:/root/dst         # upload a directory recursively
+goto get 11:/root/file.txt ./          # download
+goto get -r -v 11:/root/dir /tmp/back  # download a directory, print each path
+```
+
+**Copying INTO a host is a write operation on that host.** Under this skill's
+read-only rule, any `goto put` upload needs explicit human approval for the
+environment and action, exactly like other writes. Downloads (`goto get`)
+only read from the remote host.
+
 ## Remote Forward (-R)
 
 `-R [bind_address:]port:host:hostport` opens a listener on the **remote** host that forwards each
@@ -248,7 +274,8 @@ The implementation lives in `ssh/ssh.go`: `ParseRemoteForward` parses the spec,
 
 Important files:
 
-- `main.go`: CLI flags, host-first argument parsing, stdin command fallback, password decoding, exit-status propagation.
+- `main.go`: CLI flags, host-first argument parsing, stdin command fallback, password decoding, exit-status propagation, and the shared `resolveTarget` used by both login and `goto put`/`goto get`.
+- `putget.go`: `goto put`/`goto get` file transfer (scp-style side parsing, sftp upload/download, recursive plans, mode propagation).
 - `nopass.go`: `-setup-nopass` public-key installation and generated OpenSSH config entries.
 - `ssh/ssh.go`: SSH session setup, jump host tunneling, interactive shell, batch `Run`, stdout/stderr wiring, key auth, remote forwards.
 - `config/config.go`: config search order and host/credential lookup.

@@ -25,6 +25,7 @@ Therefore this tool, also for easier hosts management.
 * Read HostName/User/Port/IdentityFile/ProxyCommand from ~/.ssh/config
 * One line ssh login(with password, if you like)
 * Remote port forward(-R), repeatable
+* File transfer over ssh (`goto put` / `goto get`)
 
 ## install
 
@@ -138,6 +139,42 @@ Use -R to open a remote forward on the remote side; repeat the flag for several 
 The listener is bound where the remote sshd allows it, so 0.0.0.0 needs GatewayPorts yes on the remote.
 The -R target host:hostport is dialed from the local machine, and forwards stay open until goto exits.
 ```
+
+## file transfer
+
+`goto put [-r] [-v] <local> <remote>` uploads one local path to a remote
+`[user@]host:path`; `goto get [-r] [-v] <remote> <local>` downloads one remote
+path to the local machine. A remote side parses with scp semantics: split at
+the first `:`, but only when the text before it contains no `/`, so local
+paths like `./a:b` and `/tmp/x:y` stay local. `user@` is optional.
+
+```bash
+goto put file.txt 11:/root/                 # upload to host 11 from config
+goto put -r ./dir 11:/root/dst              # upload a directory recursively
+goto get 11:/root/file.txt ./               # download from host 11
+goto get -r -v 11:/root/dir /tmp/back       # download a directory, print each path
+goto put file.txt root@10.47.120.11:/a/b    # inline user@host:path also works
+```
+
+Notes:
+
+* `put` and `get` take exactly one source and one destination. To copy several
+  files, upload a directory with `-r` or loop in the shell.
+* Destination semantics (mirroring scp): when the destination is an existing
+  directory or ends with `/`, the source is copied into it under its base
+  name; otherwise the destination is the exact target path and missing parent
+  directories are created.
+* `-r` is required for directories. A directory source without `-r` errors out
+  naming the path. `-r` with a regular file is fine.
+* The source file's mode bits are applied to the created destination file.
+* Symlinks anywhere in a recursively copied tree are rejected with the offending
+  path; nothing is skipped silently. A single-file source follows the symlink.
+* The remote side resolves exactly like a login target: goto.yaml hosts,
+  `~/.ssh/config`, `-cred`, `-p`, `-user`, `-port`, `-j` and jump config all
+  apply. The remote spec itself has no port field; use `-port` or config.
+* `-v` prints each written destination path to stderr.
+* `put` and `get` are subcommands: a host literally named `put` or `get` needs
+  the inline form (`user@put:path`) or a `-user` override.
 
 ## remote forward
 

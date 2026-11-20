@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/terminal"
 	"k8s.io/klog"
@@ -151,11 +152,10 @@ func New(ip, user, pass string, options ...Option) *SSHTerminal {
 }
 
 func (t *SSHTerminal) connect() error {
-	client, err := t.dialTarget()
+	client, err := t.Dial()
 	if err != nil {
 		return err
 	}
-	t.client = client
 
 	if err := t.startRemoteForwards(); err != nil {
 		_ = t.Close()
@@ -169,6 +169,31 @@ func (t *SSHTerminal) connect() error {
 	}
 	t.sess = session
 	return nil
+}
+
+// Dial returns the ssh client, dialling once and caching it for the process
+// lifetime. Jump and ProxyCommand transports stay alive until Close. Callers
+// that only need the raw client (for example sftp) use this instead of
+// connect(), which also opens a session and remote forwards.
+func (t *SSHTerminal) Dial() (*ssh.Client, error) {
+	if t.client != nil {
+		return t.client, nil
+	}
+	client, err := t.dialTarget()
+	if err != nil {
+		return nil, err
+	}
+	t.client = client
+	return client, nil
+}
+
+// SFTPClient opens an sftp client over the dialled ssh client.
+func (t *SSHTerminal) SFTPClient() (*sftp.Client, error) {
+	client, err := t.Dial()
+	if err != nil {
+		return nil, err
+	}
+	return sftp.NewClient(client)
 }
 
 func (t *SSHTerminal) dialTarget() (*ssh.Client, error) {

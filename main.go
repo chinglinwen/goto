@@ -34,6 +34,8 @@ Usage: goto <name>
        goto [-j=<jump>] <name|ip[:port]|expr|pattern> <cmd...>
        goto [-port=2222] [-initcmds='sudo su -\n'] <name|ip[:port]|expr|pattern>
        goto -R [bind_address:]port:host:hostport <name|ip[:port]|expr|pattern>
+       goto put [-r] [-v] <local> <remote>
+       goto get [-r] [-v] <remote> <local>
 
 Examples:
   goto 11                                      # interactive login using config host 11
@@ -57,6 +59,11 @@ Examples:
   goto -initcmds='sudo su -\n' 11             # interactive login, then run sudo su -
   goto -R 40000:127.0.0.1:40000 11           # remote 127.0.0.1:40000 -> local :40000
   goto -R 0.0.0.0:8080:10.0.0.5:80 11        # repeatable; needs GatewayPorts on the remote sshd
+  goto put file.txt 11:/root/                 # upload to host 11 from config
+  goto put -r ./dir 11:/root/dst              # upload a directory recursively
+  goto get 11:/root/file.txt ./               # download from host 11
+  goto get -r -v 11:/root/dir /tmp/back       # download a directory, print each path
+  goto put file.txt root@10.47.120.11:/a/b    # inline user@host:path also works
 
 Config example:
   $ cat ~/.ssh/goto.yaml
@@ -98,26 +105,31 @@ Batch command mode writes only remote stdout to stdout, remote stderr to stderr,
 Use -R to open a remote forward on the remote side; repeat the flag for several forwards.
 The listener is bound where the remote sshd allows it, so 0.0.0.0 needs GatewayPorts yes on the remote.
 The -R target host:hostport is dialed from the local machine, and forwards stay open until goto exits.
+Use goto put/get to copy files over ssh; remote sides use [user@]host:path and resolve like login targets.
+put uploads one local path, get downloads one remote path; -r is required for directories; symlinks are rejected.
+When the destination is an existing directory or ends with /, the source is copied into it under its base name.
+The remote side has no port field; use -port or config. put/get are subcommands, so a host literally named put or get needs the inline form user@put:path.
 `)
 }
 func main() {
 	var (
-		port     string
-		user     string
-		pass     string
-		keyPath  string
-		jump     string
-		cmds     string
-		cmd      string
-		label    string
-		filter   string
-		cred     string
-		force    bool
-		verbose  bool
-		showVer  bool
-		showCred string
-		nopass   bool
-		forwards forwardList
+		port      string
+		user      string
+		pass      string
+		keyPath   string
+		jump      string
+		cmds      string
+		cmd       string
+		label     string
+		filter    string
+		cred      string
+		force     bool
+		verbose   bool
+		showVer   bool
+		showCred  string
+		nopass    bool
+		recursive bool
+		forwards  forwardList
 	)
 	flag.StringVar(&port, "port", "", "port to connect")
 	flag.StringVar(&user, "user", "", "user to auth")
@@ -133,6 +145,7 @@ func main() {
 	flag.BoolVar(&nopass, "setup-nopass", false, "install public key on target and save ~/.ssh/config.d/<host> entry")
 	flag.BoolVar(&force, "force", false, "replace existing exact Host entry when used with -setup-nopass")
 	flag.BoolVar(&verbose, "v", false, "verbose output")
+	flag.BoolVar(&recursive, "r", false, "recursive copy for goto put/get")
 	flag.Var(&forwards, "R", "remote port forward, repeatable: [bind_address:]port:host:hostport")
 	flag.BoolVar(&showVer, "V", false, "print version")
 	flag.Usage = helpfunc
@@ -202,6 +215,29 @@ func main() {
 
 	// if ip not provided, get it from config
 	args := flag.Args()
+	if len(args) > 0 && (args[0] == "put" || args[0] == "get") {
+		// The global flag package stops parsing at the subcommand, so -r/-v
+		// after put/get need their own FlagSet. The global flags still work.
+		sub := args[0]
+		subFlags := flag.NewFlagSet(sub, flag.ExitOnError)
+		subRecursive := subFlags.Bool("r", false, "recursive copy")
+		subVerbose := subFlags.Bool("v", false, "verbose output")
+		if err := subFlags.Parse(args[1:]); err != nil {
+			exit(fmt.Sprintf("usage: goto %s [-r] [-v] <src> <dst>", sub))
+		}
+		runTransfer(c, sub, subFlags.Args(), recursive || *subRecursive, verbose || *subVerbose, resolveFlags{
+			port:       port,
+			user:       user,
+			pass:       pass,
+			keyPath:    keyPath,
+			cred:       cred,
+			jump:       jump,
+			keyPathSet: keyPathSet,
+			userSet:    userSet,
+			portSet:    portSet,
+		})
+		return
+	}
 	if len(args) == 0 {
 		exit("no name or ip to connect")
 	}
@@ -228,15 +264,73 @@ func main() {
 	}
 
 	klog.V(2).Infof("get hosts: %v", ipStr)
-	chost, cport, ccred, ccmds, cjump := c.GetHost(ipStr)
+	t, err := resolveTarget(c, ipStr, resolveFlags{
+		port:       port,
+		user:       user,
+		pass:       pass,
+		keyPath:    keyPath,
+		cred:       cred,
+		cmds:       cmds,
+		jump:       jump,
+		keyPathSet: keyPathSet,
+		userSet:    userSet,
+		portSet:    portSet,
+	})
+	if err != nil {
+		exiterr("resolve target", err)
+	}
+
+	if nopass {
+		alias := nopassAlias(ipStr)
+		if err := setupNopass(t.host, t.user, t.port, t.pass, t.keypath, alias, force, t.jumpHost, t.proxyCommand); err != nil {
+			exiterr("setup nopass", err)
+		}
+		fmt.Printf("nopass login configured: %s -> %s@%s:%s\n", alias, t.user, t.host, t.port)
+		return
+	}
+	// klog.Infof("connecting to %v ..., with user: %v", expr, cuser)
+	startssh(t.host, t.user, t.port, t.pass, t.keypath, t.cmds, cmd, verbose, t.jumpHost, t.proxyCommand, forwards)
+}
+
+// resolveFlags carries the global flags that override target resolution.
+type resolveFlags struct {
+	port       string
+	user       string
+	pass       string
+	keyPath    string
+	cred       string
+	cmds       string
+	jump       string
+	keyPathSet bool
+	userSet    bool
+	portSet    bool
+}
+
+// target is the fully resolved connection description for one remote host.
+type target struct {
+	host         string
+	user         string
+	port         string
+	pass         string
+	keypath      string
+	cmds         string
+	jumpHost     *ssh.JumpHost
+	proxyCommand string
+}
+
+// resolveTarget resolves a host expression to a concrete connection target.
+// It goes through goto.yaml hosts, ~/.ssh/config, credentials, flag overrides,
+// jump host resolution and password decoding. Both login and `goto put`/`goto get` use it.
+func resolveTarget(c *config.Config, hostExpr string, flags resolveFlags) (target, error) {
+	chost, cport, ccred, ccmds, cjump := c.GetHost(hostExpr)
 	klog.V(2).Infof("chost: %v, cport: %v, ccred: %v, ccmds: %v, cjump: %v", chost, cport, ccred, ccmds, cjump)
-	_, sshConfigName, _ := parseHost(ipStr, "", "")
+	_, sshConfigName, _ := parseHost(hostExpr, "", "")
 	sshConfigHost := config.GetSSHConfigHost(sshConfigName)
 	if sshConfigHost.Found {
 		if sshConfigHost.HostName != "" {
 			chost = sshConfigHost.HostName
 		}
-		if !portSet && sshConfigHost.Port != "" {
+		if !flags.portSet && sshConfigHost.Port != "" {
 			cport = sshConfigHost.Port
 		}
 	}
@@ -248,47 +342,47 @@ func main() {
 	klog.V(2).Info("get cred: ", ccred)
 	cuser, cpass, ckeypath := c.GetCred(ccred)
 	klog.V(2).Infof("cuser: %v,cpass: ***, ckeypath: %v", cuser, ckeypath)
-	if len(port) != 0 {
-		cport = port
+	if len(flags.port) != 0 {
+		cport = flags.port
 	}
-	if len(user) != 0 {
-		cuser = user
+	if len(flags.user) != 0 {
+		cuser = flags.user
 	}
-	if !userSet && sshConfigHost.User != "" {
+	if !flags.userSet && sshConfigHost.User != "" {
 		cuser = sshConfigHost.User
 	}
-	if len(cred) != 0 {
+	if len(flags.cred) != 0 {
 		var found bool
-		cuser, cpass, ckeypath, found = applyCredential(c, cred, cuser, cpass, ckeypath, userSet, keyPathSet)
+		cuser, cpass, ckeypath, found = applyCredential(c, flags.cred, cuser, cpass, ckeypath, flags.userSet, flags.keyPathSet)
 		if !found {
-			exit("credential '" + cred + "' not found")
+			return target{}, fmt.Errorf("credential '%v' not found", flags.cred)
 		}
 	}
-	if len(pass) != 0 {
+	if len(flags.pass) != 0 {
 		var found bool
-		cuser, cpass, ckeypath, found = applyCredential(c, pass, cuser, cpass, ckeypath, userSet, keyPathSet)
+		cuser, cpass, ckeypath, found = applyCredential(c, flags.pass, cuser, cpass, ckeypath, flags.userSet, flags.keyPathSet)
 		if !found {
-			cpass = pass
+			cpass = flags.pass
 		}
 	}
-	if !keyPathSet && sshConfigHost.IdentityFile != "" {
+	if !flags.keyPathSet && sshConfigHost.IdentityFile != "" {
 		ckeypath = sshConfigHost.IdentityFile
 	}
-	if keyPathSet {
-		ckeypath = keyPath
+	if flags.keyPathSet {
+		ckeypath = flags.keyPath
 	}
-	if len(cmds) != 0 {
-		ccmds = cmds
+	if len(flags.cmds) != 0 {
+		ccmds = flags.cmds
 	}
-	if len(jump) != 0 {
-		cjump = jump
+	if len(flags.jump) != 0 {
+		cjump = flags.jump
 	}
 	if len(cpass) == 0 {
 		klog.V(2).Info("no password from cred config")
 	}
 	cpass, decodeErr := decodePassword(cpass)
 	if decodeErr != nil {
-		exiterr("decode password", decodeErr)
+		return target{}, fmt.Errorf("decode password: %w", decodeErr)
 	}
 
 	if len(cuser) == 0 {
@@ -303,21 +397,21 @@ func main() {
 		var err error
 		jumpHost, err = resolveJumpHost(c, cjump)
 		if err != nil {
-			exiterr("resolve jump host", err)
+			return target{}, fmt.Errorf("resolve jump host: %w", err)
 		}
 	}
 
 	klog.V(2).Infof("chost: %v, cport: %v, cuser: %v, cpass: ***, ckeypath: %v, ccmds: %v", chost, cport, cuser, ckeypath, ccmds)
-	if nopass {
-		alias := nopassAlias(ipStr)
-		if err := setupNopass(chost, cuser, cport, cpass, ckeypath, alias, force, jumpHost, sshConfigHost.ProxyCommand); err != nil {
-			exiterr("setup nopass", err)
-		}
-		fmt.Printf("nopass login configured: %s -> %s@%s:%s\n", alias, cuser, chost, cport)
-		return
-	}
-	// klog.Infof("connecting to %v ..., with user: %v", expr, cuser)
-	startssh(chost, cuser, cport, cpass, ckeypath, ccmds, cmd, verbose, jumpHost, sshConfigHost.ProxyCommand, forwards)
+	return target{
+		host:         chost,
+		user:         cuser,
+		port:         cport,
+		pass:         cpass,
+		keypath:      ckeypath,
+		cmds:         ccmds,
+		jumpHost:     jumpHost,
+		proxyCommand: sshConfigHost.ProxyCommand,
+	}, nil
 }
 
 // forwardList collects repeatable -R forward specs.
