@@ -270,6 +270,49 @@ The implementation lives in `ssh/ssh.go`: `ParseRemoteForward` parses the spec,
 `startRemoteForwards` opens `client.Listen` right after `dialTarget`, `forward` copies bytes, and
 `Close` tears the listeners down.
 
+## File Transfer Fallback: -R Tunnel Plus curl (verified 2026-11-20)
+
+`goto put` / `goto get` above are the normal way to move files. Reach for the `-R` tunnel below when
+they cannot serve the case: the remote sshd has no `sftp` subsystem, the transfer must resume or run
+into the tens of gigabytes, or the remote host can only reach out through the tunnel.
+
+Two shortcuts that look like they should transfer something but do not:
+
+- **stdin is not piped to the remote command.** `main()` in `main.go` reads stdin as *the command*
+  when no positional command is given (see `readCommandFromStdin`), and batch mode's
+  `SSHTerminal.Run` sets only `Stdout`/`Stderr` on the session. The session's `StdinPipe` is taken
+  only in `interactiveSession`; the other `StdinPipe` in that file belongs to the local
+  `ProxyCommand` process, not to the remote command. Measured on 10.59.72.36:
+  `cat hello.bin | goto -p xc <host> 'cat > /tmp/x.bin'` exits **0** and writes a **0-byte** file.
+- **base64 in the command string** works, but only for small files; it hits the remote argument limit.
+
+Working path — hold a session with `-R` and serve locally:
+
+```bash
+# operator host: serve the directory, hold the tunnel in the background
+(cd /path/to/dir && python3 -m http.server 18080 --bind 127.0.0.1 &)
+goto -R 18080:127.0.0.1:18080 -p xc 10.59.72.36 'sleep 7200' &
+
+# remote host: pull (large files, resumable, checksum it)
+curl -O http://127.0.0.1:18080/pkg.tar.gz && sha256sum pkg.tar.gz
+```
+
+Verified both directions on 2026-11-20 with `sha256sum` equality: download (`curl -O`, 949 MB image
+at ~15 MB/s) and upload (`curl -T file http://127.0.0.1:18080/` against a tiny python PUT handler).
+No inbound reachability to the operator host is needed, because the SSH connection dials outward.
+
+Gotchas when driving this from an agent shell:
+
+- Hold the tunnel with an explicit long command (`'sleep 7200'`), detached (`setsid nohup ... &`).
+  Without a command goto goes interactive; when the hold command ends, the tunnel and its listeners
+  die with the session.
+- A second `goto -R` on a port the first tunnel already bound fails with
+  `remote forward ... request denied by peer` and the **first** tunnel keeps working, so a stale
+  tunnel hides a broken new one. Check `ss -lntp | grep <port>` on the remote before trusting it.
+- Never use `pkill -f <pattern>` where the pattern also appears in your own command line: it kills
+  your own shell (exit 143), and any `&&` cleanup after it never runs. Match on process name
+  (`pgrep -x goto`, `pgrep -x docker`) or on a pid you already resolved from `ss`.
+
 ## Editing The Implementation
 
 Important files:
